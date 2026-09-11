@@ -1,0 +1,28 @@
+<Solution>
+  <Configurations>
+    <Platform Name="Any CPU" />
+    <Platform Name="x64" />
+  </Configurations>
+  <Folder Name="/src/">
+    <Project Path="src/AdfXplorer.Core/AdfXplorer.Core.csproj">
+      <Platform Solution="*|x64" Project="x64" />
+    </Project>
+    <Project Path="src/AdfXplorer.WinFsp/AdfXplorer.WinFsp.csproj">
+      <Platform Solution="*|x64" Project="x64" />
+    </Project>
+    <Project Path="src/AdfXplorer.Installer/AdfXplorer.Installer.wixproj">
+      <Platform Solution="*|x64" Project="x64" />
+    </Project>
+    <Project Path="src/AdfXplorer.WinFspInstaller/AdfXplorer.WinFspInstaller.csproj">
+      <Platform Solution="*|x64" Project="x64" />
+    </Project>
+    <Project Path="src/AdfXplorer.Bundle/AdfXplorer.Bundle.wixproj">
+      <Platform Solution="*|x64" Project="x64" />
+    </Project>
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/AdfXplorer.Core.Tests/AdfXplorer.Core.Tests.csproj">
+      <Platform Solution="*|x64" Project="x64" />
+    </Project>
+  </Folder>
+</Solution>

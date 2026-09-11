@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>AdfXplorerWinFspInstaller</AssemblyName>
+    <RootNamespace>AdfXplorer.WinFspInstaller</RootNamespace>
+    <PlatformTarget>x64</PlatformTarget>
+    <Platforms>AnyCPU;x64</Platforms>
+  </PropertyGroup>
+
+  <!--
+    Framework-dependent, not self-contained: this tool only ever runs as the WinFsp ExePackage in
+    Bundle.wxs's chain, strictly after the .NET Desktop Runtime ExePackage - which is Vital="yes", so
+    Burn guarantees the runtime is already present by the time this ever executes. That makes it safe
+    to stay small here rather than bundling a whole runtime for a one-shot download-and-launch tool.
+  -->
+  <PropertyGroup Condition="'$(Configuration)'=='Release'">
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
+</Project>

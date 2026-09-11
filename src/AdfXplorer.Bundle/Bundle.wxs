@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+
+  <Bundle Name="AdfXplorer"
+          Manufacturer="AdfXplorer"
+          Version="$(var.ProductVersion)"
+          UpgradeCode="1e395104-0e10-4546-bba0-91fa58ea563c"
+          IconSourceFile="..\..\res\adfxplorer.ico">
+
+    <BootstrapperApplication>
+      <bal:WixStandardBootstrapperApplication Theme="rtfLicense" LicenseFile="..\AdfXplorer.Installer\License.rtf" />
+    </BootstrapperApplication>
+
+    <!--
+      Detects an already-installed .NET 10 Windows Desktop Runtime (x64) by its shared-framework
+      registry key, so the (large, ~60MB) runtime installer is skipped entirely when unnecessary. This
+      only matches the specific patch pinned below (10.0.12) - a newer patch already on the machine
+      would still (harmlessly) re-run the installer, which just no-ops/repairs in that case. Bump the
+      pinned version/hash/size periodically as .NET ships new patches. No WOW6432Node prefix - this
+      bundle is x64, so a "default" bitness search reads the native 64-bit hive directly.
+    -->
+    <util:RegistrySearch Id="NetDesktop10Search"
+                          Root="HKLM"
+                          Key="SOFTWARE\dotnet\Setup\InstalledVersions\x64\sharedfx\Microsoft.WindowsDesktop.App\10.0.12"
+                          Result="exists"
+                          Variable="NetDesktop10Installed" />
+
+    <!--
+      Detects an already-installed WinFsp (any version) so the download/install is skipped once it's
+      present - from a prior AdfXplorer install, or the user having installed WinFsp themselves.
+    -->
+    <util:RegistrySearch Id="WinFspSearch"
+                          Root="HKLM"
+                          Key="SOFTWARE\WinFsp"
+                          Value="InstallDir"
+                          Result="exists"
+                          Variable="WinFspInstalled" />
+
+    <Chain>
+      <ExePackage Id="DotNetDesktopRuntime"
+                  DisplayName=".NET Desktop Runtime 10.0.12 (x64)"
+                  InstallArguments="/quiet /norestart"
+                  Permanent="yes"
+                  Vital="yes"
+                  DetectCondition="NetDesktop10Installed">
+        <ExePackagePayload
+          Description=".NET Windows Desktop Runtime 10.0.12 (x64)"
+          ProductName="Microsoft Windows Desktop Runtime - 10.0.12 (x64)"
+          Name="windowsdesktop-runtime-10.0.12-win-x64.exe"
+          Size="60032984"
+          Version="10.0.12.0"
+          Hash="0B907E9312867172A4EB82F4B5AB3F7C2D25E27D8349546D77EEB5D5B8CBECAB9EBEBFED189B13E9669DC578D892756C548366DA539D47B3DDAC5EFCB7AE72FE"
+          DownloadUrl="https://builds.dotnet.microsoft.com/dotnet/WindowsDesktop/10.0.12/windowsdesktop-runtime-10.0.12-win-x64.exe" />
+      </ExePackage>
+
+      <!--
+        WinFsp only ships as a raw .msi, and WiX's MsiPackage element (unlike ExePackage) always needs
+        to read the real .msi bytes at *build* time to harvest its ProductCode - a third-party MSI
+        can't be declared as a purely remote payload the way an .exe can. So WinFsp is chained here as
+        our own tiny first-party wrapper exe (AdfXplorer.WinFspInstaller) instead: nothing to harvest
+        (it's our code), so it's embedded normally like any small local payload, and it does the
+        actual WinFsp download - straight from the pinned GitHub "v2.1" release, hash-verified - and
+        install itself, entirely at real install time. It runs its own installer UI (no silent
+        switches - see Program.cs), so the user genuinely chooses whether to install WinFsp; not
+        Vital, so declining/cancelling it doesn't fail the rest of the install.
+      -->
+      <ExePackage Id="WinFsp"
+                  DisplayName="WinFsp 2.1.25156"
+                  Permanent="yes"
+                  Vital="no"
+                  DetectCondition="WinFspInstalled">
+        <ExePackagePayload SourceFile="$(var.WinFspInstallerExe)" />
+      </ExePackage>
+
+      <MsiPackage SourceFile="$(var.AdfXplorer.Installer.TargetPath)" />
+    </Chain>
+
+  </Bundle>
+</Wix>

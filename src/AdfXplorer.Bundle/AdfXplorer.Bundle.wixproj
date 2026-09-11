@@ -1,0 +1,29 @@
+<Project Sdk="WixToolset.Sdk/7.0.0">
+
+  <PropertyGroup>
+    <!-- https://wixtoolset.org/osmf/ - accepts the WiX v7 Open Source Maintenance Fee EULA -->
+    <AcceptEula>wix7</AcceptEula>
+    <OutputType>Bundle</OutputType>
+    <Platforms>x64</Platforms>
+    <!-- MSI/Bundle Version only supports numeric Major.Minor.Build - no semver prerelease/metadata suffix.
+         CI passes -p:InstallerVersion=X.Y.Z alongside the full -p:Version for the app assemblies. -->
+    <InstallerVersion Condition="'$(InstallerVersion)'==''">$(Version)</InstallerVersion>
+    <!-- The wrapper is framework-dependent (see its own csproj), so its publish output - not its
+         plain build output - is what actually runs standalone; referenced by path rather than via
+         ProjectReference's TargetPath since that only reflects `dotnet build`, not `dotnet publish`. -->
+    <WinFspInstallerExe>$(MSBuildThisFileDirectory)..\AdfXplorer.WinFspInstaller\bin\x64\$(Configuration)\net10.0\win-x64\publish\AdfXplorerWinFspInstaller.exe</WinFspInstallerExe>
+    <DefineConstants>ProductVersion=$(InstallerVersion);WinFspInstallerExe=$(WinFspInstallerExe)</DefineConstants>
+    <OutputName>AdfXplorer-Setup-$(InstallerVersion)</OutputName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="WixToolset.BootstrapperApplications.wixext" Version="7.0.0" />
+    <PackageReference Include="WixToolset.Util.wixext" Version="7.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Gives this project a $(var.AdfXplorer.Installer.TargetPath) variable pointing at the built MSI. -->
+    <ProjectReference Include="..\AdfXplorer.Installer\AdfXplorer.Installer.wixproj" />
+  </ItemGroup>
+
+</Project>

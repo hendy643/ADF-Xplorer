@@ -1,0 +1,2 @@
+Claude (Anthropic) was used during the research and planning phase of this project, and to add
+comments to the code.

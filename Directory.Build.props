@@ -1,0 +1,12 @@
+<Project>
+
+  <!--
+    Single source of truth for the project's semantic version during local/dev builds.
+    CI overrides this by passing -p:Version=X.Y.Z[-prerelease] (derived from the git tag
+    that triggered the release workflow) - see .github/workflows/release.yml.
+  -->
+  <PropertyGroup>
+    <Version>0.1.0</Version>
+  </PropertyGroup>
+
+</Project>

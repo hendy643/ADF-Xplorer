@@ -1,0 +1,19 @@
+=========================================================================
+==  NOTICE file corresponding to section 4(d) of the Apache License,   ==
+==  Version 2.0, in this case for [Your Project Name].                  ==
+=========================================================================
+
+ADF Xplorer
+Copyright 2026 hendy643 <phenderson643@gmail.com>
+
+This product includes software originally developed and authored by
+[hendy643](https://github.com/hendy643).
+
+-------------------------------------------------------------------------
+
+Downstream Redistribution & Modification Requirements:
+- Any forks, derivative works, or substantial portions of this software 
+  must retain the above copyright notice and attribution intact in all 
+  redistributed source code, documentation, and user interfaces.
+- Modified versions must explicitly note that the original software was 
+  created by hendy643.
