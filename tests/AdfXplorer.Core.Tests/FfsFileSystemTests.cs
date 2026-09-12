@@ -24,6 +24,26 @@ public class FfsFileSystemTests
     }
 
     [Fact]
+    public void FileSystemName_ReportsAmigaFfs()
+    {
+        var image = FfsTestImageBuilder.Build(out _, out _);
+
+        Assert.Equal("Amiga FFS", Mount(image).FileSystemName);
+    }
+
+    [Fact]
+    public void TryMount_UsesMidpointRootWhenBootPointerIsZero()
+    {
+        var image = FfsTestImageBuilder.Build(out _, out _);
+        Array.Clear(image, 8, 4);
+        ChecksumTestHelper.WriteBootChecksum(image);
+
+        var fs = Mount(image);
+
+        Assert.Equal("FfsTestDisk", fs.VolumeLabel);
+    }
+
+    [Fact]
     public void ListDirectory_Root_ReturnsBothFiles()
     {
         var image = FfsTestImageBuilder.Build(out _, out _);

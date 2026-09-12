@@ -46,17 +46,19 @@ public class OfsChecksumTests
         created.SaveTo(path);
         try
         {
-            var image = AdfImage.FromFile(path);
-            var fs = AmigaFileSystemRegistry.CreateDefault().Mount(image);
-            var aware = Assert.IsAssignableFrom<IChecksumAware>(fs);
+            using (var image = AdfImage.FromFile(path))
+            {
+                var fs = AmigaFileSystemRegistry.CreateDefault().Mount(image);
+                var aware = Assert.IsAssignableFrom<IChecksumAware>(fs);
 
-            bool ok = aware.ValidateChecksums(
-                (desc, stored, computed) => throw new InvalidOperationException(
-                    $"Unexpected mismatch: {desc} stored=0x{stored:X8} computed=0x{computed:X8}"),
-                out bool repaired);
+                bool ok = aware.ValidateChecksums(
+                    (desc, stored, computed) => throw new InvalidOperationException(
+                        $"Unexpected mismatch: {desc} stored=0x{stored:X8} computed=0x{computed:X8}"),
+                    out bool repaired);
 
-            Assert.True(ok);
-            Assert.False(repaired);
+                Assert.True(ok);
+                Assert.False(repaired);
+            }
         }
         finally
         {

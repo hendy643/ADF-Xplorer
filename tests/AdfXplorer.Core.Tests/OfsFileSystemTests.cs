@@ -24,6 +24,26 @@ public class OfsFileSystemTests
     }
 
     [Fact]
+    public void FileSystemName_ReportsAmigaOfs()
+    {
+        var image = TestImageBuilder.BuildMinimalOfsImage("TestDisk", out _, out _);
+
+        Assert.Equal("Amiga OFS", Mount(image).FileSystemName);
+    }
+
+    [Fact]
+    public void TryMount_UsesMidpointRootWhenBootPointerIsZero()
+    {
+        var image = TestImageBuilder.BuildMinimalOfsImage("TestDisk", out _, out _);
+        Array.Clear(image, 8, 4);
+        ChecksumTestHelper.WriteBootChecksum(image);
+
+        var fs = Mount(image);
+
+        Assert.Equal("TestDisk", fs.VolumeLabel);
+    }
+
+    [Fact]
     public void ListDirectory_Root_ReturnsFileAndSubdirectory()
     {
         var image = TestImageBuilder.BuildMinimalOfsImage("TestDisk", out _, out _);
