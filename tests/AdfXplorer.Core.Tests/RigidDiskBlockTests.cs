@@ -70,4 +70,36 @@ public class RigidDiskBlockTests
         Assert.False(fs0.TryGetEntry(RdbTestImageBuilder.Partition1FileName, out _));
         Assert.False(fs1.TryGetEntry(RdbTestImageBuilder.Partition0FileName, out _));
     }
+
+    [Fact]
+    public void FromFile_RdbWindowsShareStreamedReadsAndCachedWrites()
+    {
+        var bytes = RdbTestImageBuilder.Build(
+            out int p0Start, out _, out _, out _, out _, out _);
+        string path = Path.Combine(Path.GetTempPath(), $"rdb_streamed_{Guid.NewGuid():N}.hdf");
+        File.WriteAllBytes(path, bytes);
+
+        try
+        {
+            using (var image = AdfImage.FromFile(path))
+            {
+                var (partitions, _) = RigidDiskBlock.TryReadPartitions(image);
+                Assert.NotNull(partitions);
+
+                var partition = image.CreateWindow(partitions![0].StartBlock, partitions[0].BlockCount);
+                Assert.Equal("DOS", System.Text.Encoding.ASCII.GetString(partition.ReadBlock(0), 0, 3));
+
+                // The root block is shared with the top-level streamed image but belongs to the partition window.
+                const int rootNameOffset = 433;
+                partition.GetBlockForWrite(20)[rootNameOffset] = (byte)'X';
+                image.SaveTo(path);
+
+                Assert.Equal((byte)'X', image.ReadBlock(p0Start + 20)[rootNameOffset]);
+            }
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
 }

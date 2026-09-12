@@ -53,19 +53,7 @@ public sealed class OfsFileSystem : AmigaHashDirectoryFileSystem
             return null;
         }
 
-        int rootBlockNumber = BlockReader.ReadInt32(boot, OfsBlockOffsets.Root_BootBlockRootPointer);
-        if (rootBlockNumber <= 0 || rootBlockNumber >= image.SectorCount)
-        {
-            return null;
-        }
-
-        var root = image.ReadBlock(rootBlockNumber);
-        if (BlockReader.ReadInt32(root, OfsBlockOffsets.Type) != BlockType.Header)
-        {
-            return null;
-        }
-
-        if (BlockReader.ReadInt32(root, OfsBlockOffsets.SecType) != SecType.Root)
+        if (!AmigaDosRootBlock.TryFind(image, out int rootBlockNumber))
         {
             return null;
         }
@@ -97,7 +85,7 @@ public sealed class OfsFileSystem : AmigaHashDirectoryFileSystem
             dataSize = Math.Min(dataSize, (int)size - written);
             if (dataSize > 0)
             {
-                data.Slice(OfsBlockOffsets.Data_Payload, dataSize).CopyTo(buffer.AsSpan(written));
+                data.AsSpan(OfsBlockOffsets.Data_Payload, dataSize).CopyTo(buffer.AsSpan(written));
                 written += dataSize;
             }
 

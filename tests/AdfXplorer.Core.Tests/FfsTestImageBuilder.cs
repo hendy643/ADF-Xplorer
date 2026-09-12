@@ -19,7 +19,7 @@ internal static class FfsTestImageBuilder
     private const int TotalSectors = 1760;
     private const int SlotsPerTable = 72;
 
-    private const int RootBlock = 900;
+    private const int RootBlock = TotalSectors / 2;
     private const int SmallFileHeaderBlock = 901;
     private const int SmallFileDataBlock = 902;
     private const int BigFileHeaderBlock = 903;

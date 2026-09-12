@@ -43,6 +43,8 @@ public abstract class AmigaHashDirectoryFileSystem : IAmigaFileSystem, IChecksum
     /// <summary>Short format name ("OFS"/"FFS") used in boot/root <see cref="ChecksumReport"/> labels.</summary>
     protected abstract string FormatDisplayName { get; }
 
+    public string FileSystemName => $"Amiga {FormatDisplayName}";
+
     public string VolumeLabel
     {
         get

@@ -53,8 +53,8 @@ public sealed unsafe class AdfFileSystem : IFileSystem
     }
 
     /// <summary>
-    /// True because the underlying <see cref="AdfImage"/> is an in-memory backing array with no async I/O
-    /// path - WinFsp can dispatch callbacks synchronously without a thread-pool hop.
+    /// True because <see cref="AdfImage"/> exposes synchronous block reads and writes; file-backed images
+    /// stream those blocks directly from their source file without a dispatcher thread-pool hop.
     /// </summary>
     public bool SynchronousIo => true;
 
@@ -76,7 +76,7 @@ public sealed unsafe class AdfFileSystem : IFileSystem
         host.ReparsePoints = false;
         host.NamedStreams = false;
         host.ExtendedAttributes = false;
-        host.FileSystemName = "ADFX";
+        host.FileSystemName = _fs.FileSystemName;
         return NtStatus.Success;
     }
 

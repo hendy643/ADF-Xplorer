@@ -6,7 +6,7 @@
     that triggered the release workflow) - see .github/workflows/release.yml.
   -->
   <PropertyGroup>
-    <Version>0.1.0</Version>
+    <Version>0.1.1</Version>
   </PropertyGroup>
 
 </Project>

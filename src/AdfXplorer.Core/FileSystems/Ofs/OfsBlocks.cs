@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Text;
+using AdfXplorer.Core.DiskImage;
 
 namespace AdfXplorer.Core.FileSystems.Ofs;
 
@@ -77,6 +78,32 @@ internal static class OfsBlockOffsets
     public const int Data_NextData = 16;
     public const int Data_Payload = 24;
     public const int Data_PayloadMaxSize = 488;
+}
+
+/// <summary>
+/// Locates an AmigaDOS root block from the boot block. HDToolbox-formatted hard-disk partitions may
+/// leave the boot block's root pointer zero; the filesystem's conventional root position is then the
+/// midpoint of its partition.
+/// </summary>
+internal static class AmigaDosRootBlock
+{
+    public static bool TryFind(AdfImage image, out int rootBlockNumber)
+    {
+        rootBlockNumber = BlockReader.ReadInt32(image.ReadBlock(0), OfsBlockOffsets.Root_BootBlockRootPointer);
+        if (rootBlockNumber == 0)
+        {
+            rootBlockNumber = image.SectorCount / 2;
+        }
+
+        if (rootBlockNumber <= 0 || rootBlockNumber >= image.SectorCount)
+        {
+            return false;
+        }
+
+        var root = image.ReadBlock(rootBlockNumber);
+        return BlockReader.ReadInt32(root, OfsBlockOffsets.Type) == BlockType.Header
+            && BlockReader.ReadInt32(root, OfsBlockOffsets.SecType) == SecType.Root;
+    }
 }
 
 internal static class BlockType

@@ -60,19 +60,7 @@ public sealed class FfsFileSystem : AmigaHashDirectoryFileSystem
             return null;
         }
 
-        int rootBlockNumber = BlockReader.ReadInt32(boot, OfsBlockOffsets.Root_BootBlockRootPointer);
-        if (rootBlockNumber <= 0 || rootBlockNumber >= image.SectorCount)
-        {
-            return null;
-        }
-
-        var root = image.ReadBlock(rootBlockNumber);
-        if (BlockReader.ReadInt32(root, OfsBlockOffsets.Type) != BlockType.Header)
-        {
-            return null;
-        }
-
-        if (BlockReader.ReadInt32(root, OfsBlockOffsets.SecType) != SecType.Root)
+        if (!AmigaDosRootBlock.TryFind(image, out int rootBlockNumber))
         {
             return null;
         }

@@ -102,7 +102,7 @@ public class RigidDiskBlockWriterTests
             Assert.Equal("LSEG", Signature(block));
             int sizeLongs = ReadInt32(block, 4);
             int payloadBytes = sizeLongs * 4 - 20;
-            reconstructed.AddRange(block.Slice(20, payloadBytes).ToArray());
+            reconstructed.AddRange(block.AsSpan(20, payloadBytes).ToArray());
             lsegBlock = ReadInt32(block, 16); // next
         }
 
