@@ -256,7 +256,7 @@ public class AmigaFileSystemWriteTests
         long freeBytesBefore = writer.FreeBytes;
 
         // Attempt to write an oversized buffer that exceeds available capacity
-        byte[] oversized = new byte[freeBytesBefore + 10000];
+        byte[] oversized = new byte[checked((int)(freeBytesBefore + 10000))];
         Assert.Throws<DiskFullException>(() => writer.WriteFile("TARGET.BIN", 2000, oversized));
 
         // State must remain completely consistent
