@@ -118,4 +118,45 @@ public class AdfImageTests
             File.Delete(tempPath);
         }
     }
+
+    [Fact]
+    public void RollbackTransaction_AfterPartialWrite_RestoresPreExistingBlockContent()
+    {
+        var image = AdfImage.CreateEmpty(4);
+
+        // Block 1 already holds real data before the transaction starts.
+        var preexisting = image.GetBlockForWrite(1);
+        preexisting[0] = 0x11;
+        preexisting[10] = 0x22;
+
+        image.BeginTransaction();
+        var touched = image.GetBlockForWrite(1);
+        touched[0] = 0xFF; // overwrite part of the pre-existing block, like WriteToDataBlock would
+        touched[10] = 0xFF;
+        image.GetBlockForWrite(2)[0] = 0xEE; // a brand-new block allocated mid-operation
+
+        image.RollbackTransaction();
+
+        var restored = image.ReadBlock(1);
+        Assert.Equal(0x11, restored[0]);
+        Assert.Equal(0x22, restored[10]);
+
+        var newBlock = image.ReadBlock(2);
+        Assert.All(newBlock, b => Assert.Equal(0, b));
+    }
+
+    [Fact]
+    public void CommitTransaction_KeepsChangesAndStopsJournaling()
+    {
+        var image = AdfImage.CreateEmpty(2);
+
+        image.BeginTransaction();
+        image.GetBlockForWrite(0)[0] = 0x42;
+        image.CommitTransaction();
+
+        // A write after commit must not be rolled back by a later, unrelated rollback call.
+        image.RollbackTransaction();
+
+        Assert.Equal(0x42, image.ReadBlock(0)[0]);
+    }
 }

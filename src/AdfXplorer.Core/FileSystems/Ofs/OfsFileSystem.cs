@@ -98,6 +98,27 @@ public sealed class OfsFileSystem : AmigaHashDirectoryFileSystem
 
     protected override int DataBlockPayloadSize => OfsBlockOffsets.Data_PayloadMaxSize;
 
+    protected override int CalculateRequiredBlocks(int headerBlock, long offset, long length)
+    {
+        if (length <= 0)
+        {
+            return 0;
+        }
+
+        long newEnd = offset + length;
+        int totalBlocksNeeded = (int)((newEnd - 1) / DataBlockPayloadSize) + 1;
+
+        int existingCount = 0;
+        int current = BlockReader.ReadInt32(Image.ReadBlock(headerBlock), OfsBlockOffsets.FileHeader_FirstData);
+        while (current != 0)
+        {
+            existingCount++;
+            current = BlockReader.ReadInt32(Image.ReadBlock(current), OfsBlockOffsets.Data_NextData);
+        }
+
+        return Math.Max(0, totalBlocksNeeded - existingCount);
+    }
+
     protected override int WriteToDataBlock(int headerBlock, int logicalBlockIndex, int blockOffset, ReadOnlySpan<byte> data)
     {
         int dataBlockNum = GetOrAllocateDataBlock(headerBlock, logicalBlockIndex);
