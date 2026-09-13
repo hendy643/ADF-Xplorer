@@ -420,6 +420,7 @@ public abstract class AmigaHashDirectoryFileSystem : IAmigaFileSystem, IChecksum
         {
             return 0;
         }
+        int requiredBlocks = CalculateRequiredBlocks(headerBlock, offset, data.Length);
         if (requiredBlocks > FreeBlockCount)
         {
             throw new DiskFullException();
