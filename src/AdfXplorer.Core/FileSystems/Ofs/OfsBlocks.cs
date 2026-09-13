@@ -92,7 +92,7 @@ internal static class AmigaDosRootBlock
         rootBlockNumber = BlockReader.ReadInt32(image.ReadBlock(0), OfsBlockOffsets.Root_BootBlockRootPointer);
         if (rootBlockNumber == 0)
         {
-            rootBlockNumber = image.SectorCount / 2;
+            rootBlockNumber = (int)(image.SectorCount / 2);
         }
 
         if (rootBlockNumber <= 0 || rootBlockNumber >= image.SectorCount)

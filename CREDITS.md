@@ -47,7 +47,5 @@ The RDB creation writer (`src/AdfXplorer.Core/DiskImage/RigidDiskBlockWriter.cs`
 
 ## Build tooling
 
-- **[WiX Toolset](https://www.firegiant.com/wixtoolset/)** by FireGiant and contributors — builds the
-  Windows Installer (`.msi`) package in `src/AdfXplorer.Installer/`. WiX v7 requires accepting the
-  [Open Source Maintenance Fee EULA](https://wixtoolset.org/osmf/) (`AcceptEula` in
-  `AdfXplorer.Installer.wixproj`).
+- **[Inno Setup](https://jrsoftware.org/isinfo.php)** by Jordan Russell and Martijn Laan — builds the
+  Windows installer package (`.exe`) in `src/AdfXplorer.Installer/`.

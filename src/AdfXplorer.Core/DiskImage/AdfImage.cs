@@ -4,12 +4,19 @@ namespace AdfXplorer.Core.DiskImage;
 
 /// <summary>
 /// A raw Amiga Disk File (.adf/.hdf) image: a flat sequence of fixed-size 512-byte sectors ("blocks").
-/// This class only knows about linear block access - it has no notion of any Amiga filesystem format.
+/// This class acts as a neutral block storage container with linear sector access, independent
+/// of any specific Amiga filesystem format or capacity limits.
 /// Created images use an in-memory buffer; existing images are read one sector at a time from the source
 /// file, retaining only sectors modified through <see cref="GetBlockForWrite"/>.
 /// </summary>
 public sealed class AdfImage : IDisposable
 {
+    private sealed class MemoryBacking
+    {
+        public Dictionary<long, byte[]> Blocks { get; } = [];
+        public object SyncRoot { get; } = new();
+    }
+
     private sealed class FileBacking : IDisposable
     {
         public FileBacking(string path)
@@ -20,7 +27,7 @@ public sealed class AdfImage : IDisposable
 
         public string Path { get; }
         public FileStream Stream { get; }
-        public Dictionary<int, byte[]> ModifiedBlocks { get; } = [];
+        public Dictionary<long, byte[]> ModifiedBlocks { get; } = [];
         public object SyncRoot { get; } = new();
 
         public void Dispose() => Stream.Dispose();
@@ -30,10 +37,11 @@ public sealed class AdfImage : IDisposable
     public const int SectorSize = 512;
 
     private readonly byte[]? _data;
+    private readonly MemoryBacking? _memoryBacking;
     private readonly FileBacking? _fileBacking;
     private readonly bool _ownsFileBacking;
-    private readonly int _startBlock;
-    private readonly int _sectorCount;
+    private readonly long _startBlock;
+    private readonly long _sectorCount;
 
     /// <summary>Wraps a whole-image byte buffer for block access. The buffer is used directly (not copied), so writes to it outside this class are visible here too.</summary>
     public AdfImage(byte[] data)
@@ -47,22 +55,44 @@ public sealed class AdfImage : IDisposable
 
         _data = data;
         _startBlock = 0;
-        _sectorCount = data.Length / SectorSize;
+        _sectorCount = (long)data.Length / SectorSize;
     }
 
-    private AdfImage(byte[] data, int startBlock, int sectorCount)
+    private AdfImage(byte[] data, long startBlock, long sectorCount)
     {
         _data = data;
         _startBlock = startBlock;
         _sectorCount = sectorCount;
     }
 
-    private AdfImage(FileBacking fileBacking, int startBlock, int sectorCount, bool ownsFileBacking)
+    private AdfImage(MemoryBacking memoryBacking, long startBlock, long sectorCount)
+    {
+        _memoryBacking = memoryBacking;
+        _startBlock = startBlock;
+        _sectorCount = sectorCount;
+    }
+
+    private AdfImage(FileBacking fileBacking, long startBlock, long sectorCount, bool ownsFileBacking)
     {
         _fileBacking = fileBacking;
         _startBlock = startBlock;
         _sectorCount = sectorCount;
         _ownsFileBacking = ownsFileBacking;
+    }
+
+    /// <summary>
+    /// Creates a blank in-memory image for the given number of sectors.
+    /// Blocks are allocated lazily as written, keeping memory usage minimal regardless of sector count.
+    /// </summary>
+    public static AdfImage CreateEmpty(long sectorCount)
+    {
+        if (sectorCount <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(sectorCount), sectorCount, "Sector count must be positive.");
+        }
+
+        return new AdfImage(new MemoryBacking(), startBlock: 0, sectorCount);
     }
 
     /// <summary>
@@ -80,43 +110,49 @@ public sealed class AdfImage : IDisposable
         }
 
         long sectorCount = fileInfo.Length / SectorSize;
-        if (sectorCount > int.MaxValue)
-        {
-            throw new ArgumentException(
-                $"Image has {sectorCount:N0} sectors, exceeding the {int.MaxValue:N0}-sector limit.",
-                nameof(path));
-        }
-
-        return new AdfImage(new FileBacking(path), startBlock: 0, (int)sectorCount, ownsFileBacking: true);
+        return new AdfImage(new FileBacking(path), startBlock: 0, sectorCount, ownsFileBacking: true);
     }
 
     /// <summary>Number of blocks visible through this image or window - not necessarily the whole underlying file when this is a partition window (see <see cref="CreateWindow"/>).</summary>
-    public int SectorCount => _sectorCount;
+    public long SectorCount => _sectorCount;
 
     /// <summary>Size of the visible region in bytes; for a partition window this is the partition's size, not the whole disk's.</summary>
-    public long SizeInBytes => (long)_sectorCount * SectorSize;
+    public long SizeInBytes => _sectorCount * SectorSize;
 
     /// <summary>Reads one complete block into an isolated buffer, addressed relative to this image/window's own block 0.</summary>
-    public byte[] ReadBlock(int blockNumber)
+    public byte[] ReadBlock(long blockNumber)
     {
         ValidateBlockNumber(blockNumber);
-        int absoluteBlock = _startBlock + blockNumber;
+        long absoluteBlock = _startBlock + blockNumber;
         if (_data is not null)
         {
-            return _data.AsSpan(absoluteBlock * SectorSize, SectorSize).ToArray();
+            return _data.AsSpan((int)absoluteBlock * SectorSize, SectorSize).ToArray();
         }
 
-        lock (_fileBacking!.SyncRoot)
+        if (_fileBacking is not null)
         {
-            if (_fileBacking.ModifiedBlocks.TryGetValue(absoluteBlock, out var modified))
+            lock (_fileBacking.SyncRoot)
             {
-                return modified;
+                if (_fileBacking.ModifiedBlocks.TryGetValue(absoluteBlock, out var modified))
+                {
+                    return (byte[])modified.Clone();
+                }
+
+                var block = new byte[SectorSize];
+                _fileBacking.Stream.Position = absoluteBlock * SectorSize;
+                _fileBacking.Stream.ReadExactly(block);
+                return block;
+            }
+        }
+
+        lock (_memoryBacking!.SyncRoot)
+        {
+            if (_memoryBacking.Blocks.TryGetValue(absoluteBlock, out var block))
+            {
+                return (byte[])block.Clone();
             }
 
-            var block = new byte[SectorSize];
-            _fileBacking.Stream.Position = (long)absoluteBlock * SectorSize;
-            _fileBacking.Stream.ReadExactly(block);
-            return block;
+            return new byte[SectorSize];
         }
     }
 
@@ -125,41 +161,63 @@ public sealed class AdfImage : IDisposable
     /// <paramref name="blockCount"/>) of this image, renumbered so the window's own block 0 maps to
     /// this image's <paramref name="startBlock"/>.
     /// </summary>
-    public AdfImage CreateWindow(int startBlock, int blockCount)
+    public AdfImage CreateWindow(long startBlock, long blockCount)
     {
-        if (startBlock < 0 || blockCount <= 0 || (long)startBlock + blockCount > _sectorCount)
+        if (startBlock < 0 || blockCount <= 0 || startBlock + blockCount > _sectorCount)
         {
             throw new ArgumentOutOfRangeException(
                 nameof(startBlock), $"Window [{startBlock}, {startBlock + blockCount}) is out of range [0, {_sectorCount}).");
         }
 
-        int absoluteStartBlock = _startBlock + startBlock;
-        return _data is not null
-            ? new AdfImage(_data, absoluteStartBlock, blockCount)
-            : new AdfImage(_fileBacking!, absoluteStartBlock, blockCount, ownsFileBacking: false);
+        long absoluteStartBlock = _startBlock + startBlock;
+        if (_data is not null)
+        {
+            return new AdfImage(_data, absoluteStartBlock, blockCount);
+        }
+
+        if (_fileBacking is not null)
+        {
+            return new AdfImage(_fileBacking, absoluteStartBlock, blockCount, ownsFileBacking: false);
+        }
+
+        return new AdfImage(_memoryBacking!, absoluteStartBlock, blockCount);
     }
 
     /// <summary>
     /// A mutable view of one block. For file-backed images, the block enters the write cache before its
     /// span is returned, ensuring subsequent reads observe changes and <see cref="SaveTo"/> persists it.
     /// </summary>
-    public Span<byte> GetBlockForWrite(int blockNumber)
+    public Span<byte> GetBlockForWrite(long blockNumber)
     {
         ValidateBlockNumber(blockNumber);
-        int absoluteBlock = _startBlock + blockNumber;
+        long absoluteBlock = _startBlock + blockNumber;
         if (_data is not null)
         {
-            return _data.AsSpan(absoluteBlock * SectorSize, SectorSize);
+            return _data.AsSpan((int)absoluteBlock * SectorSize, SectorSize);
         }
 
-        lock (_fileBacking!.SyncRoot)
+        if (_fileBacking is not null)
         {
-            if (!_fileBacking.ModifiedBlocks.TryGetValue(absoluteBlock, out var block))
+            lock (_fileBacking.SyncRoot)
+            {
+                if (!_fileBacking.ModifiedBlocks.TryGetValue(absoluteBlock, out var block))
+                {
+                    block = new byte[SectorSize];
+                    _fileBacking.Stream.Position = absoluteBlock * SectorSize;
+                    _fileBacking.Stream.ReadExactly(block);
+                    _fileBacking.ModifiedBlocks.Add(absoluteBlock, block);
+                }
+
+                return block;
+            }
+        }
+
+        lock (_memoryBacking!.SyncRoot)
+        {
+            if (!_memoryBacking.Blocks.TryGetValue(absoluteBlock, out var block))
             {
                 block = new byte[SectorSize];
-                _fileBacking.Stream.Position = (long)absoluteBlock * SectorSize;
-                _fileBacking.Stream.ReadExactly(block);
-                _fileBacking.ModifiedBlocks.Add(absoluteBlock, block);
+                _memoryBacking.Blocks.Add(absoluteBlock, block);
             }
 
             return block;
@@ -170,7 +228,7 @@ public sealed class AdfImage : IDisposable
     /// Overwrites the 4-byte big-endian field at <paramref name="fieldOffset"/> within
     /// <paramref name="blockNumber"/>. Does not touch disk; call <see cref="SaveTo"/> to persist.
     /// </summary>
-    public void PatchChecksumField(int blockNumber, int fieldOffset, uint value) =>
+    public void PatchChecksumField(long blockNumber, int fieldOffset, uint value) =>
         BinaryPrimitives.WriteUInt32BigEndian(GetBlockForWrite(blockNumber).Slice(fieldOffset, 4), value);
 
     /// <summary>Writes this image's current bytes to <paramref name="path"/>.</summary>
@@ -182,21 +240,42 @@ public sealed class AdfImage : IDisposable
             return;
         }
 
-        if (!Path.GetFullPath(path).Equals(_fileBacking!.Path, StringComparison.OrdinalIgnoreCase))
+        if (_fileBacking is not null)
         {
-            throw new NotSupportedException("A file-backed image can only be saved to its source path.");
-        }
-
-        lock (_fileBacking.SyncRoot)
-        {
-            foreach (var (blockNumber, block) in _fileBacking.ModifiedBlocks)
+            if (!Path.GetFullPath(path).Equals(_fileBacking.Path, StringComparison.OrdinalIgnoreCase))
             {
-                _fileBacking.Stream.Position = (long)blockNumber * SectorSize;
-                _fileBacking.Stream.Write(block);
+                throw new NotSupportedException("A file-backed image can only be saved to its source path.");
             }
 
-            _fileBacking.Stream.Flush(flushToDisk: true);
-            _fileBacking.ModifiedBlocks.Clear();
+            lock (_fileBacking.SyncRoot)
+            {
+                foreach (var (blockNumber, block) in _fileBacking.ModifiedBlocks)
+                {
+                    _fileBacking.Stream.Position = blockNumber * SectorSize;
+                    _fileBacking.Stream.Write(block);
+                }
+
+                _fileBacking.Stream.Flush(flushToDisk: true);
+                _fileBacking.ModifiedBlocks.Clear();
+            }
+
+            return;
+        }
+
+        if (_memoryBacking is not null)
+        {
+            lock (_memoryBacking.SyncRoot)
+            {
+                using var stream = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None);
+                stream.SetLength(_sectorCount * SectorSize);
+                foreach (var (blockNumber, block) in _memoryBacking.Blocks.OrderBy(kv => kv.Key))
+                {
+                    stream.Position = blockNumber * SectorSize;
+                    stream.Write(block);
+                }
+
+                stream.Flush(flushToDisk: true);
+            }
         }
     }
 
@@ -209,9 +288,9 @@ public sealed class AdfImage : IDisposable
         }
     }
 
-    private void ValidateBlockNumber(int blockNumber)
+    private void ValidateBlockNumber(long blockNumber)
     {
-        if ((uint)blockNumber >= (uint)_sectorCount)
+        if (blockNumber < 0 || blockNumber >= _sectorCount)
         {
             throw new ArgumentOutOfRangeException(
                 nameof(blockNumber), blockNumber, $"Block must be in [0, {_sectorCount}).");

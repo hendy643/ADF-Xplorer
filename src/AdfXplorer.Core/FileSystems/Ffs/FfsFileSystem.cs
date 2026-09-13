@@ -24,6 +24,9 @@ namespace AdfXplorer.Core.FileSystems.Ffs;
 /// </summary>
 public sealed class FfsFileSystem : AmigaHashDirectoryFileSystem
 {
+    /// <summary>Maximum number of 512-byte sectors supported by FFS (4 GiB / 8,388,608 sectors).</summary>
+    public new const int MaxSupportedSectors = AmigaHashDirectoryFileSystem.MaxSupportedSectors;
+
     private const int SlotsPerTable = 72;
 
     private FfsFileSystem(AdfImage image, int rootBlock) : base(image, rootBlock)
@@ -40,7 +43,7 @@ public sealed class FfsFileSystem : AmigaHashDirectoryFileSystem
     /// </summary>
     public static IAmigaFileSystem? TryMount(AdfImage image)
     {
-        if (image.SectorCount < 2)
+        if (image.SectorCount < 2 || image.SectorCount > MaxSupportedSectors)
         {
             return null;
         }
@@ -69,50 +72,11 @@ public sealed class FfsFileSystem : AmigaHashDirectoryFileSystem
     }
 
     /// <summary>
-    /// Reads a file's contents by walking its header/extension-block chain and, in each block, its
-    /// right-aligned data-block-number table (see class remarks) - the FFS counterpart to
-    /// <see cref="Ofs.OfsFileSystem.OpenFileData"/>'s per-block <c>next_data</c>-chain walk.
+    /// Reads a file's contents by streaming data blocks on demand through <see cref="FfsFileDataStream"/>,
+    /// keeping only data-block sector indices in memory.
     /// </summary>
-    protected override Stream OpenFileData(int headerBlock, long size)
-    {
-        var buffer = new byte[size];
-        int written = 0;
-        int currentBlock = headerBlock;
-        bool first = true;
-
-        while (currentBlock != 0 && written < size)
-        {
-            if (!first && !IsBlockAccepted(currentBlock, "file extension block"))
-            {
-                break; // Reject policy: truncate the stream at whatever was already read.
-            }
-
-            var block = Image.ReadBlock(currentBlock);
-            int highSeq = BlockReader.ReadInt32(block, OfsBlockOffsets.FileHeader_HighSeq);
-
-            for (int i = 0; i < highSeq && written < size; i++)
-            {
-                int slot = SlotsPerTable - 1 - i;
-                int dataBlockNum = BlockReader.ReadInt32(block, OfsBlockOffsets.HashTable + slot * 4);
-                if (dataBlockNum == 0)
-                {
-                    continue;
-                }
-
-                var data = Image.ReadBlock(dataBlockNum);
-                int toCopy = (int)Math.Min(AdfImage.SectorSize, size - written);
-                data[..toCopy].CopyTo(buffer.AsSpan(written));
-                written += toCopy;
-            }
-
-            currentBlock = BlockReader.ReadInt32(block, OfsBlockOffsets.Extension);
-            first = false;
-        }
-
-        return written == size
-            ? new MemoryStream(buffer, writable: false)
-            : new MemoryStream(buffer, 0, written, writable: false);
-    }
+    protected override Stream OpenFileData(int headerBlock, long size) =>
+        new FfsFileDataStream(Image, headerBlock, size, IsBlockAccepted);
 
     protected override IEnumerable<ChecksumReport> ScanFileDataBlocks(int headerBlock, string fileLabel)
     {

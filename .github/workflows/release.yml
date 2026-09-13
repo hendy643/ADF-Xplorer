@@ -44,5 +44,4 @@ jobs:
           prerelease: ${{ contains(steps.version.outputs.version, '-') }}
           generate_release_notes: true
           files: |
-            src/AdfXplorer.Bundle/bin/x64/Release/AdfXplorer-Setup-*.exe
-            src/AdfXplorer.Installer/bin/x64/Release/AdfXplorer-*.msi
+            src/AdfXplorer.Installer/bin/x64/Release/AdfXplorer-Setup-*.exe

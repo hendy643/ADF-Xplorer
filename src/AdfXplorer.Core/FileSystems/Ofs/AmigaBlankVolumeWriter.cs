@@ -24,25 +24,47 @@ internal static class AmigaBlankVolumeWriter
 
     public static AdfImage CreateBlank(int sectorCount, string volumeLabel, byte bootFlags)
     {
-        var data = new byte[(long)sectorCount * SectorSize];
-        WriteBlankInto(data, 0, sectorCount, volumeLabel, bootFlags);
-        return new AdfImage(data);
+        if (sectorCount < 4)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(sectorCount), sectorCount, "Need at least 4 blocks (boot x2, root, bitmap).");
+        }
+
+        if (sectorCount > AmigaHashDirectoryFileSystem.MaxSupportedSectors)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(sectorCount),
+                sectorCount,
+                $"Sector count {sectorCount:N0} exceeds the 4 GiB limit ({AmigaHashDirectoryFileSystem.MaxSupportedSectors:N0} sectors).");
+        }
+
+        var image = AdfImage.CreateEmpty(sectorCount);
+        WriteBlankInto(image, 0, sectorCount, volumeLabel, bootFlags);
+        return image;
     }
 
     /// <summary>
-    /// Writes a blank volume's boot/root/bitmap blocks into <paramref name="hostData"/> starting at
+    /// Writes a blank volume's boot/root/bitmap blocks into <paramref name="image"/> starting at
     /// <paramref name="baseBlock"/> (block-number units, not bytes) - lets a caller embed a formatted
-    /// OFS/FFS volume directly into a larger shared array (e.g. one partition of an RDB <c>.hdf</c>)
+    /// OFS/FFS volume directly into an image (e.g. one partition of an RDB <c>.hdf</c>)
     /// instead of building a standalone image and copying it in. All block numbers written into the
     /// volume's own structures (root/bitmap pointers) are relative to <paramref name="baseBlock"/>,
     /// exactly as <see cref="AdfImage.CreateWindow"/> expects.
     /// </summary>
-    internal static void WriteBlankInto(byte[] hostData, int baseBlock, int sectorCount, string volumeLabel, byte bootFlags)
+    internal static void WriteBlankInto(AdfImage image, long baseBlock, int sectorCount, string volumeLabel, byte bootFlags)
     {
         if (sectorCount < 4)
         {
             throw new ArgumentOutOfRangeException(
                 nameof(sectorCount), sectorCount, "Need at least 4 blocks (boot x2, root, bitmap).");
+        }
+
+        if (sectorCount > AmigaHashDirectoryFileSystem.MaxSupportedSectors)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(sectorCount),
+                sectorCount,
+                $"Sector count {sectorCount:N0} exceeds the 4 GiB limit ({AmigaHashDirectoryFileSystem.MaxSupportedSectors:N0} sectors).");
         }
 
         int rootBlock = sectorCount / 2;
@@ -52,69 +74,68 @@ internal static class AmigaBlankVolumeWriter
             throw new ArgumentOutOfRangeException(nameof(sectorCount), sectorCount, "Image too small.");
         }
 
-        long baseOffset = (long)baseBlock * SectorSize;
-
-        WriteBootBlock(hostData, baseOffset, rootBlock, bootFlags);
-        WriteRootBlock(hostData, baseOffset, rootBlock, bitmapBlock, volumeLabel);
-        WriteBitmapBlock(hostData, baseOffset, bitmapBlock, sectorCount, rootBlock);
+        WriteBootBlock(image, baseBlock, rootBlock, bootFlags);
+        WriteRootBlock(image, baseBlock, rootBlock, bitmapBlock, volumeLabel);
+        WriteBitmapBlock(image, baseBlock, bitmapBlock, sectorCount, rootBlock);
     }
 
-    private static void WriteBootBlock(byte[] data, long baseOffset, int rootBlock, byte bootFlags)
+    private static void WriteBootBlock(AdfImage image, long baseBlock, int rootBlock, byte bootFlags)
     {
-        int off = (int)baseOffset;
-        data[off + 0] = (byte)'D';
-        data[off + 1] = (byte)'O';
-        data[off + 2] = (byte)'S';
-        data[off + 3] = bootFlags;
-        WriteInt32(data, off + 8, rootBlock);
+        var boot0 = image.GetBlockForWrite(baseBlock + 0);
+        boot0[0] = (byte)'D';
+        boot0[1] = (byte)'O';
+        boot0[2] = (byte)'S';
+        boot0[3] = bootFlags;
+        WriteInt32(boot0, 8, rootBlock);
 
-        uint checksum = OfsChecksum.ComputeBootChecksum(
-            data.AsSpan(off, SectorSize), data.AsSpan(off + SectorSize, SectorSize));
-        WriteUInt32(data, off + OfsBlockOffsets.Boot_Checksum, checksum);
+        var boot1 = image.GetBlockForWrite(baseBlock + 1);
+        uint checksum = OfsChecksum.ComputeBootChecksum(boot0, boot1);
+        WriteUInt32(boot0, OfsBlockOffsets.Boot_Checksum, checksum);
     }
 
-    private static void WriteRootBlock(byte[] data, long baseOffset, int rootBlock, int bitmapBlock, string volumeLabel)
+    private static void WriteRootBlock(AdfImage image, long baseBlock, int rootBlock, int bitmapBlock, string volumeLabel)
     {
-        int off = (int)baseOffset + rootBlock * SectorSize;
-        WriteInt32(data, off + OfsBlockOffsets.Type, BlockType.Header);
-        WriteInt32(data, off + OfsBlockOffsets.Root_HashTableSize, OfsBlockOffsets.HashTableCount);
-        WriteInt32(data, off + OfsBlockOffsets.Root_BitmapFlag, -1); // valid
-        WriteInt32(data, off + OfsBlockOffsets.Root_BitmapPages, bitmapBlock);
+        var root = image.GetBlockForWrite(baseBlock + rootBlock);
+        WriteInt32(root, OfsBlockOffsets.Type, BlockType.Header);
+        WriteInt32(root, OfsBlockOffsets.Root_HashTableSize, OfsBlockOffsets.HashTableCount);
+        WriteInt32(root, OfsBlockOffsets.Root_BitmapFlag, -1); // valid
+        WriteInt32(root, OfsBlockOffsets.Root_BitmapPages, bitmapBlock);
 
         var (days, mins, ticks) = AmigaTime.FromDateTimeUtc(DateTime.UtcNow);
-        WriteInt32(data, off + 420, days); // root alteration date
-        WriteInt32(data, off + 424, mins);
-        WriteInt32(data, off + 428, ticks);
-        WriteInt32(data, off + 472, days); // creation date
-        WriteInt32(data, off + 476, mins);
-        WriteInt32(data, off + 480, ticks);
+        WriteInt32(root, 420, days); // root alteration date
+        WriteInt32(root, 424, mins);
+        WriteInt32(root, 428, ticks);
+        WriteInt32(root, 472, days); // creation date
+        WriteInt32(root, 476, mins);
+        WriteInt32(root, 480, ticks);
 
         WriteBcplString(
-            data, off + OfsBlockOffsets.Root_NameLen, off + OfsBlockOffsets.Root_Name, volumeLabel,
+            root, OfsBlockOffsets.Root_NameLen, OfsBlockOffsets.Root_Name, volumeLabel,
             OfsBlockOffsets.Root_NameMaxLength);
 
-        WriteInt32(data, off + OfsBlockOffsets.SecType, SecType.Root);
+        WriteInt32(root, OfsBlockOffsets.SecType, SecType.Root);
 
         uint checksum = BlockReader.ComputeNormalChecksum(
-            data.AsSpan(off, SectorSize), OfsBlockOffsets.Checksum, 128);
-        WriteUInt32(data, off + OfsBlockOffsets.Checksum, checksum);
+            root, OfsBlockOffsets.Checksum, 128);
+        WriteUInt32(root, OfsBlockOffsets.Checksum, checksum);
     }
 
-    private static void WriteBitmapBlock(byte[] data, long baseOffset, int bitmapBlock, int sectorCount, int rootBlock)
+    private static void WriteBitmapBlock(AdfImage image, long baseBlock, int bitmapBlock, int sectorCount, int rootBlock)
     {
-        int off = (int)baseOffset + bitmapBlock * SectorSize;
-        for (int block = 2; block < sectorCount; block++)
+        var bitmap = image.GetBlockForWrite(baseBlock + bitmapBlock);
+        int maxBlockInMap = Math.Min(sectorCount, 2 + BitmapMapWords * 32);
+        for (int block = 2; block < maxBlockInMap; block++)
         {
             if (block == rootBlock || block == bitmapBlock)
             {
                 continue; // left as "used" (bit stays 0)
             }
 
-            MarkFree(data, off, block);
+            MarkFree(bitmap, block);
         }
 
-        uint checksum = BlockReader.ComputeNormalChecksum(data.AsSpan(off, SectorSize), 0, 128);
-        WriteUInt32(data, off, checksum);
+        uint checksum = BlockReader.ComputeNormalChecksum(bitmap, 0, 128);
+        WriteUInt32(bitmap, 0, checksum);
     }
 
     /// <summary>
@@ -122,29 +143,29 @@ internal static class AmigaBlankVolumeWriter
     /// convention. Block numbers are offset by 2 because blocks 0-1 (the boot block) are never
     /// represented in the bitmap at all.
     /// </summary>
-    private static void MarkFree(byte[] data, int bitmapBlockOffset, int blockNumber)
+    private static void MarkFree(Span<byte> bitmapBlock, int blockNumber)
     {
         int sectOfMap = blockNumber - 2;
         int mapIndex = (sectOfMap / 32) % BitmapMapWords;
         int bitPos = sectOfMap % 32;
-        int wordOffset = bitmapBlockOffset + 4 + mapIndex * 4;
+        int wordOffset = 4 + mapIndex * 4;
 
-        uint word = BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(wordOffset, 4));
+        uint word = BinaryPrimitives.ReadUInt32BigEndian(bitmapBlock.Slice(wordOffset, 4));
         word |= 1u << bitPos;
-        BinaryPrimitives.WriteUInt32BigEndian(data.AsSpan(wordOffset, 4), word);
+        BinaryPrimitives.WriteUInt32BigEndian(bitmapBlock.Slice(wordOffset, 4), word);
     }
 
-    private static void WriteInt32(byte[] data, int offset, int value) =>
-        BinaryPrimitives.WriteInt32BigEndian(data.AsSpan(offset, 4), value);
+    private static void WriteInt32(Span<byte> data, int offset, int value) =>
+        BinaryPrimitives.WriteInt32BigEndian(data.Slice(offset, 4), value);
 
-    private static void WriteUInt32(byte[] data, int offset, uint value) =>
-        BinaryPrimitives.WriteUInt32BigEndian(data.AsSpan(offset, 4), value);
+    private static void WriteUInt32(Span<byte> data, int offset, uint value) =>
+        BinaryPrimitives.WriteUInt32BigEndian(data.Slice(offset, 4), value);
 
-    private static void WriteBcplString(byte[] data, int lengthOffset, int dataOffset, string value, int maxLen)
+    private static void WriteBcplString(Span<byte> data, int lengthOffset, int dataOffset, string value, int maxLen)
     {
         var bytes = Encoding.Latin1.GetBytes(value);
         int len = Math.Min(bytes.Length, maxLen);
         data[lengthOffset] = (byte)len;
-        Array.Copy(bytes, 0, data, dataOffset, len);
+        bytes.AsSpan(0, len).CopyTo(data.Slice(dataOffset, len));
     }
 }
