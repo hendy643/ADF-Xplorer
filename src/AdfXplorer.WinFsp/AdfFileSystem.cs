@@ -36,6 +36,15 @@ public sealed unsafe class AdfFileSystem : IFileSystem
     private readonly byte[] _securityDescriptor;
 
     /// <summary>
+    /// Serializes every callback that touches <see cref="_fs"/>/<see cref="_writer"/> or persists the
+    /// image. WinFsp's dispatcher can run callbacks for different handles concurrently even with
+    /// <c>synchronized</c> mount options, so without this lock two overlapping writes could both pass a
+    /// free-space check before either allocates blocks, racing in the allocator or leaving the image
+    /// inconsistent if one fails mid-mutation.
+    /// </summary>
+    private readonly object _lock = new();
+
+    /// <summary>
     /// Wraps an already-opened Amiga filesystem for mounting.
     /// </summary>
     /// <param name="fs">The filesystem to expose (OFS/FFS reader, optionally also a writer).</param>
@@ -96,17 +105,23 @@ public sealed unsafe class AdfFileSystem : IFileSystem
     /// <summary>Reports the windowed volume size (not the whole backing image) and remaining free space.</summary>
     public int GetVolumeInfo(out ulong totalSize, out ulong freeSize, out string volumeLabel)
     {
-        totalSize = (ulong)_imageSizeBytes;
-        freeSize = (ulong)(_writer?.FreeBytes ?? 0);
-        volumeLabel = _fs.VolumeLabel;
-        return NtStatus.Success;
+        lock (_lock)
+        {
+            totalSize = (ulong)_imageSizeBytes;
+            freeSize = (ulong)(_writer?.FreeBytes ?? 0);
+            volumeLabel = _fs.VolumeLabel;
+            return NtStatus.Success;
+        }
     }
 
     public int SetVolumeLabel(string volumeLabel, out ulong totalSize, out ulong freeSize)
     {
-        totalSize = (ulong)_imageSizeBytes;
-        freeSize = (ulong)(_writer?.FreeBytes ?? 0);
-        return NtStatus.MediaWriteProtected; // volume-label rename isn't modeled by IAmigaFileSystemWriter
+        lock (_lock)
+        {
+            totalSize = (ulong)_imageSizeBytes;
+            freeSize = (ulong)(_writer?.FreeBytes ?? 0);
+            return NtStatus.MediaWriteProtected; // volume-label rename isn't modeled by IAmigaFileSystemWriter
+        }
     }
 
     /// <summary>
@@ -125,14 +140,17 @@ public sealed unsafe class AdfFileSystem : IFileSystem
             return NtStatus.Success;
         }
 
-        if (!_fs.TryGetEntry(path, out var entry))
+        lock (_lock)
         {
-            fileAttributes = 0;
-            return NtStatus.ObjectNameNotFound;
-        }
+            if (!_fs.TryGetEntry(path, out var entry))
+            {
+                fileAttributes = 0;
+                return NtStatus.ObjectNameNotFound;
+            }
 
-        fileAttributes = AttributesFor(entry);
-        return NtStatus.Success;
+            fileAttributes = AttributesFor(entry);
+            return NtStatus.Success;
+        }
     }
 
     /// <summary>
@@ -152,20 +170,23 @@ public sealed unsafe class AdfFileSystem : IFileSystem
         var path = NormalizePath(fileName);
         bool isDirectory = (createOptions & (uint)CreateOptions.FileDirectoryFile) != 0;
 
-        try
+        lock (_lock)
         {
-            var entry = isDirectory ? _writer.CreateDirectory(path) : _writer.CreateFile(path);
-            info.Context = new FileContext(path, entry.IsDirectory);
-            Persist();
-            return ValueTask.FromResult(new CreateResult(NtStatus.Success, BuildFileInfo(entry), null));
-        }
-        catch (DiskFullException)
-        {
-            return ValueTask.FromResult(new CreateResult(NtStatus.DiskFull, default, null));
-        }
-        catch (IOException)
-        {
-            return ValueTask.FromResult(new CreateResult(NtStatus.ObjectNameCollision, default, null));
+            try
+            {
+                var entry = isDirectory ? _writer.CreateDirectory(path) : _writer.CreateFile(path);
+                info.Context = new FileContext(path, entry.IsDirectory);
+                Persist();
+                return ValueTask.FromResult(new CreateResult(NtStatus.Success, BuildFileInfo(entry), null));
+            }
+            catch (DiskFullException)
+            {
+                return ValueTask.FromResult(new CreateResult(NtStatus.DiskFull, default, null));
+            }
+            catch (IOException)
+            {
+                return ValueTask.FromResult(new CreateResult(NtStatus.ObjectNameCollision, default, null));
+            }
         }
     }
 
@@ -177,18 +198,21 @@ public sealed unsafe class AdfFileSystem : IFileSystem
         string fileName, uint createOptions, uint grantedAccess, FileOperationInfo info, CancellationToken ct)
     {
         var path = NormalizePath(fileName);
-        AmigaDirectoryEntry entry;
-        if (path.Length == 0)
+        lock (_lock)
         {
-            entry = new AmigaDirectoryEntry(_fs.VolumeLabel, IsDirectory: true, Size: 0, DateTime.UnixEpoch, "");
-        }
-        else if (!_fs.TryGetEntry(path, out entry!))
-        {
-            return ValueTask.FromResult(new CreateResult(NtStatus.ObjectNameNotFound, default, null));
-        }
+            AmigaDirectoryEntry entry;
+            if (path.Length == 0)
+            {
+                entry = new AmigaDirectoryEntry(_fs.VolumeLabel, IsDirectory: true, Size: 0, DateTime.UnixEpoch, "");
+            }
+            else if (!_fs.TryGetEntry(path, out entry!))
+            {
+                return ValueTask.FromResult(new CreateResult(NtStatus.ObjectNameNotFound, default, null));
+            }
 
-        info.Context = new FileContext(path, entry.IsDirectory);
-        return ValueTask.FromResult(new CreateResult(NtStatus.Success, BuildFileInfo(entry), null));
+            info.Context = new FileContext(path, entry.IsDirectory);
+            return ValueTask.FromResult(new CreateResult(NtStatus.Success, BuildFileInfo(entry), null));
+        }
     }
 
     /// <summary>Truncates an existing file to zero length (Windows "overwrite" semantics, e.g. from `&gt;`-style redirection).</summary>
@@ -202,20 +226,23 @@ public sealed unsafe class AdfFileSystem : IFileSystem
         }
 
         var ctx = (FileContext)info.Context!;
-        try
+        lock (_lock)
         {
-            _writer.SetFileSize(ctx.Path, 0);
-            Persist();
-            _fs.TryGetEntry(ctx.Path, out var entry);
-            return ValueTask.FromResult(FsResult.Success(BuildFileInfo(entry)));
-        }
-        catch (DiskFullException)
-        {
-            return ValueTask.FromResult(FsResult.Error(NtStatus.DiskFull));
-        }
-        catch (IOException)
-        {
-            return ValueTask.FromResult(FsResult.Error(NtStatus.UnexpectedIoError));
+            try
+            {
+                _writer.SetFileSize(ctx.Path, 0);
+                Persist();
+                _fs.TryGetEntry(ctx.Path, out var entry);
+                return ValueTask.FromResult(FsResult.Success(BuildFileInfo(entry)));
+            }
+            catch (DiskFullException)
+            {
+                return ValueTask.FromResult(FsResult.Error(NtStatus.DiskFull));
+            }
+            catch (IOException)
+            {
+                return ValueTask.FromResult(FsResult.Error(NtStatus.UnexpectedIoError));
+            }
         }
     }
 
@@ -232,15 +259,18 @@ public sealed unsafe class AdfFileSystem : IFileSystem
         // Re-opened fresh on every call (rather than cached at Open time) so a read always reflects the
         // latest writes made through this or another handle - correctness over the small re-read cost,
         // which is negligible at floppy/small-hardfile scale.
-        using var stream = _fs.OpenRead(ctx.Path);
-        if (offset >= (ulong)stream.Length)
+        lock (_lock)
         {
-            return ValueTask.FromResult(ReadResult.EndOfFile());
-        }
+            using var stream = _fs.OpenRead(ctx.Path);
+            if (offset >= (ulong)stream.Length)
+            {
+                return ValueTask.FromResult(ReadResult.EndOfFile());
+            }
 
-        stream.Position = (long)offset;
-        int read = stream.Read(buffer.Span);
-        return ValueTask.FromResult(ReadResult.Success((uint)read));
+            stream.Position = (long)offset;
+            int read = stream.Read(buffer.Span);
+            return ValueTask.FromResult(ReadResult.Success((uint)read));
+        }
     }
 
     /// <summary>Writes a byte range, optionally appending at the current end-of-file (see <paramref name="writeToEndOfFile"/>).</summary>
@@ -254,29 +284,32 @@ public sealed unsafe class AdfFileSystem : IFileSystem
         }
 
         var ctx = (FileContext)info.Context!;
-        try
+        lock (_lock)
         {
-            long writeOffset = (long)offset;
-            if (writeToEndOfFile && _fs.TryGetEntry(ctx.Path, out var current))
+            try
             {
-                writeOffset = current.Size;
+                long writeOffset = (long)offset;
+                if (writeToEndOfFile && _fs.TryGetEntry(ctx.Path, out var current))
+                {
+                    writeOffset = current.Size;
+                }
+
+                // constrainedIo (don't extend past current EOF, used for memory-mapped writes) isn't
+                // enforced separately - an accepted simplification; ordinary file writes are unaffected.
+                int written = _writer.WriteFile(ctx.Path, writeOffset, buffer.Span);
+                Persist();
+
+                _fs.TryGetEntry(ctx.Path, out var updated);
+                return ValueTask.FromResult(WriteResult.Success((uint)written, BuildFileInfo(updated)));
             }
-
-            // constrainedIo (don't extend past current EOF, used for memory-mapped writes) isn't
-            // enforced separately - an accepted simplification; ordinary file writes are unaffected.
-            int written = _writer.WriteFile(ctx.Path, writeOffset, buffer.Span);
-            Persist();
-
-            _fs.TryGetEntry(ctx.Path, out var updated);
-            return ValueTask.FromResult(WriteResult.Success((uint)written, BuildFileInfo(updated)));
-        }
-        catch (DiskFullException)
-        {
-            return ValueTask.FromResult(WriteResult.Error(NtStatus.DiskFull));
-        }
-        catch (Exception ex) when (ex is IOException or FileNotFoundException)
-        {
-            return ValueTask.FromResult(WriteResult.Error(NtStatus.UnexpectedIoError));
+            catch (DiskFullException)
+            {
+                return ValueTask.FromResult(WriteResult.Error(NtStatus.DiskFull));
+            }
+            catch (Exception ex) when (ex is IOException or FileNotFoundException)
+            {
+                return ValueTask.FromResult(WriteResult.Error(NtStatus.UnexpectedIoError));
+            }
         }
     }
 
@@ -286,25 +319,31 @@ public sealed unsafe class AdfFileSystem : IFileSystem
     /// </summary>
     public ValueTask<FsResult> FlushFileBuffers(string? fileName, FileOperationInfo info, CancellationToken ct)
     {
-        Persist();
-        return ValueTask.FromResult(FsResult.Success(default));
+        lock (_lock)
+        {
+            Persist();
+            return ValueTask.FromResult(FsResult.Success(default));
+        }
     }
 
     /// <summary>Reports metadata for an already-open handle (root path is synthesized - see <see cref="OpenFile"/>).</summary>
     public ValueTask<FsResult> GetFileInformation(string fileName, FileOperationInfo info, CancellationToken ct)
     {
         var ctx = (FileContext)info.Context!;
-        AmigaDirectoryEntry entry;
-        if (ctx.Path.Length == 0)
+        lock (_lock)
         {
-            entry = new AmigaDirectoryEntry(_fs.VolumeLabel, IsDirectory: true, Size: 0, DateTime.UnixEpoch, "");
-        }
-        else if (!_fs.TryGetEntry(ctx.Path, out entry!))
-        {
-            return ValueTask.FromResult(FsResult.Error(NtStatus.ObjectNameNotFound));
-        }
+            AmigaDirectoryEntry entry;
+            if (ctx.Path.Length == 0)
+            {
+                entry = new AmigaDirectoryEntry(_fs.VolumeLabel, IsDirectory: true, Size: 0, DateTime.UnixEpoch, "");
+            }
+            else if (!_fs.TryGetEntry(ctx.Path, out entry!))
+            {
+                return ValueTask.FromResult(FsResult.Error(NtStatus.ObjectNameNotFound));
+            }
 
-        return ValueTask.FromResult(FsResult.Success(BuildFileInfo(entry)));
+            return ValueTask.FromResult(FsResult.Success(BuildFileInfo(entry)));
+        }
     }
 
     /// <summary>
@@ -321,15 +360,18 @@ public sealed unsafe class AdfFileSystem : IFileSystem
         }
 
         var ctx = (FileContext)info.Context!;
-        if (lastWriteTime != 0)
+        lock (_lock)
         {
-            _writer.SetLastWriteTime(ctx.Path, DateTime.FromFileTimeUtc((long)lastWriteTime));
-            Persist();
-        }
+            if (lastWriteTime != 0)
+            {
+                _writer.SetLastWriteTime(ctx.Path, DateTime.FromFileTimeUtc((long)lastWriteTime));
+                Persist();
+            }
 
-        // Amiga protection-bit mapping (read-only/archive/etc.) is not modeled - accepted as a no-op.
-        _fs.TryGetEntry(ctx.Path, out var entry);
-        return ValueTask.FromResult(FsResult.Success(BuildFileInfo(entry)));
+            // Amiga protection-bit mapping (read-only/archive/etc.) is not modeled - accepted as a no-op.
+            _fs.TryGetEntry(ctx.Path, out var entry);
+            return ValueTask.FromResult(FsResult.Success(BuildFileInfo(entry)));
+        }
     }
 
     /// <summary>Resizes a file's logical length; a pure allocation-size hint is a no-op (see remarks inline).</summary>
@@ -343,28 +385,31 @@ public sealed unsafe class AdfFileSystem : IFileSystem
 
         var ctx = (FileContext)info.Context!;
 
-        if (setAllocationSize)
+        lock (_lock)
         {
-            // A pure allocation-size hint (no change to the logical EOF) isn't meaningful for our
-            // block-per-file-size model; accept as a no-op.
-            _fs.TryGetEntry(ctx.Path, out var unchanged);
-            return ValueTask.FromResult(FsResult.Success(BuildFileInfo(unchanged)));
-        }
+            if (setAllocationSize)
+            {
+                // A pure allocation-size hint (no change to the logical EOF) isn't meaningful for our
+                // block-per-file-size model; accept as a no-op.
+                _fs.TryGetEntry(ctx.Path, out var unchanged);
+                return ValueTask.FromResult(FsResult.Success(BuildFileInfo(unchanged)));
+            }
 
-        try
-        {
-            _writer.SetFileSize(ctx.Path, (long)newSize);
-            Persist();
-            _fs.TryGetEntry(ctx.Path, out var updated);
-            return ValueTask.FromResult(FsResult.Success(BuildFileInfo(updated)));
-        }
-        catch (DiskFullException)
-        {
-            return ValueTask.FromResult(FsResult.Error(NtStatus.DiskFull));
-        }
-        catch (IOException)
-        {
-            return ValueTask.FromResult(FsResult.Error(NtStatus.UnexpectedIoError));
+            try
+            {
+                _writer.SetFileSize(ctx.Path, (long)newSize);
+                Persist();
+                _fs.TryGetEntry(ctx.Path, out var updated);
+                return ValueTask.FromResult(FsResult.Success(BuildFileInfo(updated)));
+            }
+            catch (DiskFullException)
+            {
+                return ValueTask.FromResult(FsResult.Error(NtStatus.DiskFull));
+            }
+            catch (IOException)
+            {
+                return ValueTask.FromResult(FsResult.Error(NtStatus.UnexpectedIoError));
+            }
         }
     }
 
@@ -380,12 +425,15 @@ public sealed unsafe class AdfFileSystem : IFileSystem
         }
 
         var ctx = (FileContext)info.Context!;
-        if (ctx.IsDirectory && _fs.ListDirectory(ctx.Path).Count > 0)
+        lock (_lock)
         {
-            return ValueTask.FromResult(NtStatus.DirectoryNotEmpty);
-        }
+            if (ctx.IsDirectory && _fs.ListDirectory(ctx.Path).Count > 0)
+            {
+                return ValueTask.FromResult(NtStatus.DirectoryNotEmpty);
+            }
 
-        return ValueTask.FromResult(NtStatus.Success);
+            return ValueTask.FromResult(NtStatus.Success);
+        }
     }
 
     /// <summary>
@@ -403,27 +451,30 @@ public sealed unsafe class AdfFileSystem : IFileSystem
         var ctx = (FileContext)info.Context!;
         var newPath = NormalizePath(newFileName);
 
-        bool destExists = _fs.TryGetEntry(newPath, out var existing);
-        if (destExists && !replaceIfExists)
+        lock (_lock)
         {
-            return ValueTask.FromResult(NtStatus.ObjectNameCollision);
-        }
-
-        try
-        {
-            if (destExists && !existing.IsDirectory)
+            bool destExists = _fs.TryGetEntry(newPath, out var existing);
+            if (destExists && !replaceIfExists)
             {
-                _writer.Delete(newPath);
+                return ValueTask.FromResult(NtStatus.ObjectNameCollision);
             }
 
-            _writer.Rename(ctx.Path, newPath);
-            ctx.Path = newPath;
-            Persist();
-            return ValueTask.FromResult(NtStatus.Success);
-        }
-        catch (Exception ex) when (ex is IOException or FileNotFoundException)
-        {
-            return ValueTask.FromResult(NtStatus.UnexpectedIoError);
+            try
+            {
+                if (destExists && !existing.IsDirectory)
+                {
+                    _writer.Delete(newPath);
+                }
+
+                _writer.Rename(ctx.Path, newPath);
+                ctx.Path = newPath;
+                Persist();
+                return ValueTask.FromResult(NtStatus.Success);
+            }
+            catch (Exception ex) when (ex is IOException or FileNotFoundException)
+            {
+                return ValueTask.FromResult(NtStatus.UnexpectedIoError);
+            }
         }
     }
 
@@ -440,16 +491,19 @@ public sealed unsafe class AdfFileSystem : IFileSystem
         }
 
         var ctx = (FileContext)info.Context!;
-        try
+        lock (_lock)
         {
-            _writer.Delete(ctx.Path);
-            Persist();
-        }
-        catch (Exception ex)
-        {
-            // Cleanup has no status-return channel back to the caller - CanDelete is where real
-            // rejection happens; this is a best-effort log only.
-            Console.Error.WriteLine($"Delete failed for '{ctx.Path}': {ex.Message}");
+            try
+            {
+                _writer.Delete(ctx.Path);
+                Persist();
+            }
+            catch (Exception ex)
+            {
+                // Cleanup has no status-return channel back to the caller - CanDelete is where real
+                // rejection happens; this is a best-effort log only.
+                Console.Error.WriteLine($"Delete failed for '{ctx.Path}': {ex.Message}");
+            }
         }
     }
 
@@ -468,37 +522,40 @@ public sealed unsafe class AdfFileSystem : IFileSystem
     {
         var path = NormalizePath(fileName);
 
-        var names = new List<(string Name, AmigaDirectoryEntry Entry)>
+        lock (_lock)
         {
-            (".", new AmigaDirectoryEntry(".", true, 0, DateTime.UnixEpoch, "")),
-            ("..", new AmigaDirectoryEntry("..", true, 0, DateTime.UnixEpoch, "")),
-        };
-        foreach (var e in _fs.ListDirectory(path))
-        {
-            names.Add((e.Name, e));
-        }
-
-        IEnumerable<(string Name, AmigaDirectoryEntry Entry)> toEmit = names;
-        if (!string.IsNullOrEmpty(marker))
-        {
-            toEmit = names
-                .SkipWhile(e => !string.Equals(e.Name, marker, StringComparison.OrdinalIgnoreCase))
-                .Skip(1);
-        }
-
-        uint bytesTransferred = 0;
-        foreach (var (name, entry) in toEmit)
-        {
-            var dirInfo = new FspDirInfo();
-            dirInfo.SetFileName(name);
-            dirInfo.FileInfo = BuildFileInfo(entry);
-            if (!WinFspFileSystem.AddDirInfo(&dirInfo, buffer, length, &bytesTransferred))
+            var names = new List<(string Name, AmigaDirectoryEntry Entry)>
             {
-                break; // buffer full; WinFsp will call again with a marker to resume
+                (".", new AmigaDirectoryEntry(".", true, 0, DateTime.UnixEpoch, "")),
+                ("..", new AmigaDirectoryEntry("..", true, 0, DateTime.UnixEpoch, "")),
+            };
+            foreach (var e in _fs.ListDirectory(path))
+            {
+                names.Add((e.Name, e));
             }
-        }
 
-        return ValueTask.FromResult(ReadDirectoryResult.Success(bytesTransferred));
+            IEnumerable<(string Name, AmigaDirectoryEntry Entry)> toEmit = names;
+            if (!string.IsNullOrEmpty(marker))
+            {
+                toEmit = names
+                    .SkipWhile(e => !string.Equals(e.Name, marker, StringComparison.OrdinalIgnoreCase))
+                    .Skip(1);
+            }
+
+            uint bytesTransferred = 0;
+            foreach (var (name, entry) in toEmit)
+            {
+                var dirInfo = new FspDirInfo();
+                dirInfo.SetFileName(name);
+                dirInfo.FileInfo = BuildFileInfo(entry);
+                if (!WinFspFileSystem.AddDirInfo(&dirInfo, buffer, length, &bytesTransferred))
+                {
+                    break; // buffer full; WinFsp will call again with a marker to resume
+                }
+            }
+
+            return ValueTask.FromResult(ReadDirectoryResult.Success(bytesTransferred));
+        }
     }
 
     /// <summary>Every file/directory shares the same fixed descriptor built at construction time.</summary>
@@ -564,14 +621,17 @@ public sealed unsafe class AdfFileSystem : IFileSystem
     {
         var dirPath = NormalizePath(dirName);
         var fullPath = dirPath.Length == 0 ? entryName : $"{dirPath}/{entryName}";
-        if (!_fs.TryGetEntry(fullPath, out var entry))
+        lock (_lock)
         {
-            return NtStatus.ObjectNameNotFound;
-        }
+            if (!_fs.TryGetEntry(fullPath, out var entry))
+            {
+                return NtStatus.ObjectNameNotFound;
+            }
 
-        dirInfo.SetFileName(entryName);
-        dirInfo.FileInfo = BuildFileInfo(entry);
-        return NtStatus.Success;
+            dirInfo.SetFileName(entryName);
+            dirInfo.FileInfo = BuildFileInfo(entry);
+            return NtStatus.Success;
+        }
     }
 
     /// <summary>
