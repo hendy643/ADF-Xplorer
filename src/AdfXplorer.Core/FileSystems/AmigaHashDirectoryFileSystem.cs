@@ -415,13 +415,11 @@ public abstract class AmigaHashDirectoryFileSystem : IAmigaFileSystem, IChecksum
 
     public int WriteFile(string path, long offset, ReadOnlySpan<byte> data)
     {
+        int headerBlock = FindFileHeaderBlockOrThrow(path);
         if (data.IsEmpty)
         {
             return 0;
         }
-
-        int headerBlock = FindFileHeaderBlockOrThrow(path);
-        int requiredBlocks = CalculateRequiredBlocks(headerBlock, offset, data.Length);
         if (requiredBlocks > FreeBlockCount)
         {
             throw new DiskFullException();
