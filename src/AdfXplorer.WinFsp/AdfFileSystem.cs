@@ -159,6 +159,10 @@ public sealed unsafe class AdfFileSystem : IFileSystem
             Persist();
             return ValueTask.FromResult(new CreateResult(NtStatus.Success, BuildFileInfo(entry), null));
         }
+        catch (DiskFullException)
+        {
+            return ValueTask.FromResult(new CreateResult(NtStatus.DiskFull, default, null));
+        }
         catch (IOException)
         {
             return ValueTask.FromResult(new CreateResult(NtStatus.ObjectNameCollision, default, null));
@@ -204,6 +208,10 @@ public sealed unsafe class AdfFileSystem : IFileSystem
             Persist();
             _fs.TryGetEntry(ctx.Path, out var entry);
             return ValueTask.FromResult(FsResult.Success(BuildFileInfo(entry)));
+        }
+        catch (DiskFullException)
+        {
+            return ValueTask.FromResult(FsResult.Error(NtStatus.DiskFull));
         }
         catch (IOException)
         {
@@ -261,6 +269,10 @@ public sealed unsafe class AdfFileSystem : IFileSystem
 
             _fs.TryGetEntry(ctx.Path, out var updated);
             return ValueTask.FromResult(WriteResult.Success((uint)written, BuildFileInfo(updated)));
+        }
+        catch (DiskFullException)
+        {
+            return ValueTask.FromResult(WriteResult.Error(NtStatus.DiskFull));
         }
         catch (Exception ex) when (ex is IOException or FileNotFoundException)
         {
@@ -345,6 +357,10 @@ public sealed unsafe class AdfFileSystem : IFileSystem
             Persist();
             _fs.TryGetEntry(ctx.Path, out var updated);
             return ValueTask.FromResult(FsResult.Success(BuildFileInfo(updated)));
+        }
+        catch (DiskFullException)
+        {
+            return ValueTask.FromResult(FsResult.Error(NtStatus.DiskFull));
         }
         catch (IOException)
         {

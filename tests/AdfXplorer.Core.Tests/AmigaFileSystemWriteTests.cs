@@ -243,4 +243,133 @@ public class AmigaFileSystemWriteTests
         truncatedStream.CopyTo(truncatedMs);
         Assert.Equal(content[..1000], truncatedMs.ToArray());
     }
+
+    [Theory]
+    [MemberData(nameof(Formats))]
+    public void Issue17_WriteFile_WhenRequiringMoreSpaceThanAvailable_RefusesWriteAndLeavesImageConsistent(Format format)
+    {
+        var (writer, fs) = Blank(format);
+        writer.CreateFile("TARGET.BIN");
+        var initialContent = Pattern(2000);
+        writer.WriteFile("TARGET.BIN", 0, initialContent);
+
+        long freeBytesBefore = writer.FreeBytes;
+
+        // Attempt to write an oversized buffer that exceeds available capacity
+        byte[] oversized = new byte[freeBytesBefore + 10000];
+        Assert.Throws<DiskFullException>(() => writer.WriteFile("TARGET.BIN", 2000, oversized));
+
+        // State must remain completely consistent
+        Assert.Equal(freeBytesBefore, writer.FreeBytes);
+        Assert.True(fs.TryGetEntry("TARGET.BIN", out var entry));
+        Assert.Equal(initialContent.Length, entry.Size);
+
+        using (var stream = fs.OpenRead("TARGET.BIN"))
+        using (var ms = new MemoryStream())
+        {
+            stream.CopyTo(ms);
+            Assert.Equal(initialContent, ms.ToArray());
+        }
+
+        var aware = Assert.IsAssignableFrom<IChecksumAware>(fs);
+        Assert.All(aware.ScanChecksums(), r => Assert.True(r.Valid, r.BlockDescription));
+
+        // Subsequent valid write succeeds cleanly and updates image consistently
+        var smallAppend = Pattern(100);
+        int written = writer.WriteFile("TARGET.BIN", 2000, smallAppend);
+        Assert.Equal(100, written);
+        Assert.True(fs.TryGetEntry("TARGET.BIN", out var updatedEntry));
+        Assert.Equal(2100, updatedEntry.Size);
+        Assert.All(aware.ScanChecksums(), r => Assert.True(r.Valid, r.BlockDescription));
+    }
+
+    [Theory]
+    [MemberData(nameof(Formats))]
+    public void Issue17_SetFileSize_Grow_WhenRequiringMoreSpaceThanAvailable_RefusesAndLeavesImageConsistent(Format format)
+    {
+        var (writer, fs) = Blank(format);
+        writer.CreateFile("GROW.BIN");
+        var initial = Pattern(1000);
+        writer.WriteFile("GROW.BIN", 0, initial);
+        long freeBefore = writer.FreeBytes;
+
+        // Try to grow far beyond disk capacity
+        Assert.Throws<DiskFullException>(() => writer.SetFileSize("GROW.BIN", freeBefore + 50000));
+
+        Assert.Equal(freeBefore, writer.FreeBytes);
+        Assert.True(fs.TryGetEntry("GROW.BIN", out var entry));
+        Assert.Equal(1000, entry.Size);
+
+        var aware = Assert.IsAssignableFrom<IChecksumAware>(fs);
+        Assert.All(aware.ScanChecksums(), r => Assert.True(r.Valid, r.BlockDescription));
+    }
+
+    [Theory]
+    [MemberData(nameof(Formats))]
+    public void Issue17_CreateFile_WhenDiskFull_ThrowsDiskFullException(Format format)
+    {
+        var (writer, fs) = Blank(format);
+        writer.CreateFile("FILL.BIN");
+
+        // Fill all remaining free blocks on the volume
+        while (writer.FreeBytes > 0)
+        {
+            int freeBlocks = (int)(writer.FreeBytes / AdfImage.SectorSize);
+            long targetSize;
+            if (format.Name == "OFS")
+            {
+                targetSize = (long)freeBlocks * 488;
+            }
+            else
+            {
+                int extBlocks = freeBlocks <= 72 ? 0 : (freeBlocks - 72 + 72) / 73;
+                int dataBlocks = freeBlocks - extBlocks;
+                targetSize = (long)dataBlocks * 512;
+            }
+
+            Assert.True(fs.TryGetEntry("FILL.BIN", out var entry));
+            writer.SetFileSize("FILL.BIN", entry.Size + targetSize);
+        }
+
+        Assert.Equal(0, writer.FreeBytes);
+
+        Assert.Throws<DiskFullException>(() => writer.CreateFile("EXTRA.BIN"));
+        Assert.Throws<DiskFullException>(() => writer.CreateDirectory("EXTRADIR"));
+    }
+
+    [Fact]
+    public void Issue17_Ffs_WriteFile_WhenRequiringExtensionBlockWithInsufficientSpace_RefusesWrite()
+    {
+        var image = FfsFileSystemWriter.CreateBlank(1760, "FfsTest");
+        var fs = FfsFileSystem.TryMount(image)!;
+        var writer = Assert.IsAssignableFrom<IAmigaFileSystemWriter>(fs);
+
+        // Fill table 0 completely (72 blocks = 36864 bytes)
+        writer.CreateFile("TARGET.BIN");
+        writer.WriteFile("TARGET.BIN", 0, Pattern(72 * 512));
+
+        // Create a filler file and size it so that exactly 1 block remains free on disk
+        writer.CreateFile("FILLER.BIN");
+        // We have FreeBlockCount free blocks; we want to leave exactly 1 free block.
+        // We need to consume (FreeBlockCount - 1) blocks.
+        int blocksToConsume = (int)(writer.FreeBytes / AdfImage.SectorSize) - 1;
+        int extBlocks = blocksToConsume <= 72 ? 0 : (blocksToConsume - 72 + 72) / 73;
+        int dataBlocks = blocksToConsume - extBlocks;
+        writer.SetFileSize("FILLER.BIN", (long)dataBlocks * 512);
+
+        Assert.Equal(AdfImage.SectorSize, writer.FreeBytes);
+
+        // Writing 1 more sector to TARGET.BIN requires:
+        // 1 extension block (for table 1) + 1 data block = 2 blocks.
+        // Available space is only 1 block.
+        Assert.Throws<DiskFullException>(() => writer.WriteFile("TARGET.BIN", 72 * 512, Pattern(512)));
+
+        // Verify exactly 1 block remains free and file size is unchanged
+        Assert.Equal(AdfImage.SectorSize, writer.FreeBytes);
+        Assert.True(fs.TryGetEntry("TARGET.BIN", out var targetEntry));
+        Assert.Equal(72 * 512, targetEntry.Size);
+
+        var aware = Assert.IsAssignableFrom<IChecksumAware>(fs);
+        Assert.All(aware.ScanChecksums(), r => Assert.True(r.Valid, r.BlockDescription));
+    }
 }

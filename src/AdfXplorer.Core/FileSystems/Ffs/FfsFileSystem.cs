@@ -103,6 +103,52 @@ public sealed class FfsFileSystem : AmigaHashDirectoryFileSystem
 
     protected override int DataBlockPayloadSize => AdfImage.SectorSize;
 
+    protected override int CalculateRequiredBlocks(int headerBlock, long offset, long length)
+    {
+        if (length <= 0)
+        {
+            return 0;
+        }
+
+        int payloadSize = DataBlockPayloadSize;
+        int startLogicalBlock = (int)(offset / payloadSize);
+        int endLogicalBlock = (int)((offset + length - 1) / payloadSize);
+        int endTable = endLogicalBlock / SlotsPerTable;
+
+        var tableBlocks = new List<int> { headerBlock };
+        int ext = BlockReader.ReadInt32(Image.ReadBlock(headerBlock), OfsBlockOffsets.Extension);
+        while (ext != 0)
+        {
+            tableBlocks.Add(ext);
+            ext = BlockReader.ReadInt32(Image.ReadBlock(ext), OfsBlockOffsets.Extension);
+        }
+
+        int newExtensionBlocks = Math.Max(0, endTable - (tableBlocks.Count - 1));
+        int newDataBlocks = 0;
+
+        for (int b = startLogicalBlock; b <= endLogicalBlock; b++)
+        {
+            int tableIdx = b / SlotsPerTable;
+            int slot = b % SlotsPerTable;
+            if (tableIdx < tableBlocks.Count)
+            {
+                var table = Image.ReadBlock(tableBlocks[tableIdx]);
+                int slotOffset = OfsBlockOffsets.HashTable + (SlotsPerTable - 1 - slot) * 4;
+                int dataBlockNum = BlockReader.ReadInt32(table, slotOffset);
+                if (dataBlockNum == 0)
+                {
+                    newDataBlocks++;
+                }
+            }
+            else
+            {
+                newDataBlocks++;
+            }
+        }
+
+        return newExtensionBlocks + newDataBlocks;
+    }
+
     protected override int WriteToDataBlock(int headerBlock, int logicalBlockIndex, int blockOffset, ReadOnlySpan<byte> data)
     {
         int tableIndex = logicalBlockIndex / SlotsPerTable;

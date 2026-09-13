@@ -136,6 +136,13 @@ public abstract class AmigaHashDirectoryFileSystem : IAmigaFileSystem, IChecksum
     protected abstract int DataBlockPayloadSize { get; }
 
     /// <summary>
+    /// Calculates the number of new blocks (data blocks and any format-specific metadata/extension blocks)
+    /// that would need to be allocated to satisfy a write or file-growth operation starting at <paramref name="offset"/>
+    /// and writing <paramref name="length"/> bytes.
+    /// </summary>
+    protected abstract int CalculateRequiredBlocks(int headerBlock, long offset, long length);
+
+    /// <summary>
     /// Writes as much of <paramref name="data"/> as fits into the data block at
     /// <paramref name="logicalBlockIndex"/> within <paramref name="headerBlock"/>'s file, starting at
     /// <paramref name="blockOffset"/> bytes into that block's payload (allocating the block, and
@@ -348,23 +355,26 @@ public abstract class AmigaHashDirectoryFileSystem : IAmigaFileSystem, IChecksum
         }
     }
 
-    public long FreeBytes
+    public int FreeBlockCount
     {
         get
         {
-            var bitmap = Image.ReadBlock(GetBitmapBlockOrThrow());
-            long freeBlocks = 0;
+            int bitmapBlock = GetBitmapBlockOrThrow();
+            var bitmap = Image.ReadBlock(bitmapBlock);
+            int freeBlocks = 0;
             for (int b = 2; b < Image.SectorCount; b++)
             {
-                if (IsBlockFree(bitmap, b))
+                if (b != bitmapBlock && IsBlockFree(bitmap, b))
                 {
                     freeBlocks++;
                 }
             }
 
-            return freeBlocks * AdfImage.SectorSize;
+            return freeBlocks;
         }
     }
+
+    public long FreeBytes => (long)FreeBlockCount * AdfImage.SectorSize;
 
     public AmigaDirectoryEntry CreateFile(string path) => CreateEntry(path, SecType.File);
 
@@ -405,34 +415,58 @@ public abstract class AmigaHashDirectoryFileSystem : IAmigaFileSystem, IChecksum
 
     public int WriteFile(string path, long offset, ReadOnlySpan<byte> data)
     {
+        if (data.IsEmpty)
+        {
+            return 0;
+        }
+
         int headerBlock = FindFileHeaderBlockOrThrow(path);
+        int requiredBlocks = CalculateRequiredBlocks(headerBlock, offset, data.Length);
+        if (requiredBlocks > FreeBlockCount)
+        {
+            throw new DiskFullException();
+        }
+
         int payloadSize = DataBlockPayloadSize;
+        long origSize = BlockReader.ReadUInt32(Image.ReadBlock(headerBlock), OfsBlockOffsets.FileHeader_ByteSize);
+        int origBlocksNeeded = origSize == 0 ? 0 : (int)((origSize - 1) / payloadSize) + 1;
 
         int written = 0;
-        while (written < data.Length)
+        try
         {
-            long pos = offset + written;
-            int logicalBlockIndex = (int)(pos / payloadSize);
-            int blockOffset = (int)(pos % payloadSize);
-            int chunk = WriteToDataBlock(headerBlock, logicalBlockIndex, blockOffset, data[written..]);
-            if (chunk <= 0)
+            while (written < data.Length)
             {
-                throw new IOException($"Failed to write '{path}'.");
+                long pos = offset + written;
+                int logicalBlockIndex = (int)(pos / payloadSize);
+                int blockOffset = (int)(pos % payloadSize);
+                int chunk = WriteToDataBlock(headerBlock, logicalBlockIndex, blockOffset, data[written..]);
+                if (chunk <= 0)
+                {
+                    throw new IOException($"Failed to write '{path}'.");
+                }
+
+                written += chunk;
             }
 
-            written += chunk;
-        }
+            long newEnd = offset + written;
+            var header = Image.GetBlockForWrite(headerBlock);
+            long currentSize = BlockReader.ReadUInt32(header, OfsBlockOffsets.FileHeader_ByteSize);
+            if (newEnd > currentSize)
+            {
+                BlockWriter.WriteUInt32(header, OfsBlockOffsets.FileHeader_ByteSize, (uint)newEnd);
+            }
 
-        long newEnd = offset + written;
-        var header = Image.GetBlockForWrite(headerBlock);
-        long currentSize = BlockReader.ReadUInt32(header, OfsBlockOffsets.FileHeader_ByteSize);
-        if (newEnd > currentSize)
+            RewriteChecksum(header);
+            return written;
+        }
+        catch
         {
-            BlockWriter.WriteUInt32(header, OfsBlockOffsets.FileHeader_ByteSize, (uint)newEnd);
+            FreeDataBlocksFrom(headerBlock, origBlocksNeeded);
+            var header = Image.GetBlockForWrite(headerBlock);
+            BlockWriter.WriteUInt32(header, OfsBlockOffsets.FileHeader_ByteSize, (uint)origSize);
+            RewriteChecksum(header);
+            throw;
         }
-
-        RewriteChecksum(header);
-        return written;
     }
 
     public void SetFileSize(string path, long size)
@@ -450,32 +484,53 @@ public abstract class AmigaHashDirectoryFileSystem : IAmigaFileSystem, IChecksum
         {
             int blocksNeeded = size == 0 ? 0 : (int)((size - 1) / payloadSize) + 1;
             FreeDataBlocksFrom(headerBlock, blocksNeeded);
+            var header = Image.GetBlockForWrite(headerBlock);
+            BlockWriter.WriteUInt32(header, OfsBlockOffsets.FileHeader_ByteSize, (uint)size);
+            RewriteChecksum(header);
         }
         else if (size > currentSize)
         {
             long remaining = size - currentSize;
+            int requiredBlocks = CalculateRequiredBlocks(headerBlock, currentSize, remaining);
+            if (requiredBlocks > FreeBlockCount)
+            {
+                throw new DiskFullException();
+            }
+
+            int origBlocksNeeded = currentSize == 0 ? 0 : (int)((currentSize - 1) / payloadSize) + 1;
             long pos = currentSize;
             Span<byte> zeros = stackalloc byte[payloadSize];
             zeros.Clear();
-            while (remaining > 0)
+            try
             {
-                int logicalBlockIndex = (int)(pos / payloadSize);
-                int blockOffset = (int)(pos % payloadSize);
-                int toWrite = (int)Math.Min(remaining, payloadSize - blockOffset);
-                int chunk = WriteToDataBlock(headerBlock, logicalBlockIndex, blockOffset, zeros[..toWrite]);
-                if (chunk <= 0)
+                while (remaining > 0)
                 {
-                    throw new IOException($"Failed to grow '{path}'.");
+                    int logicalBlockIndex = (int)(pos / payloadSize);
+                    int blockOffset = (int)(pos % payloadSize);
+                    int toWrite = (int)Math.Min(remaining, payloadSize - blockOffset);
+                    int chunk = WriteToDataBlock(headerBlock, logicalBlockIndex, blockOffset, zeros[..toWrite]);
+                    if (chunk <= 0)
+                    {
+                        throw new IOException($"Failed to grow '{path}'.");
+                    }
+
+                    pos += chunk;
+                    remaining -= chunk;
                 }
 
-                pos += chunk;
-                remaining -= chunk;
+                var header = Image.GetBlockForWrite(headerBlock);
+                BlockWriter.WriteUInt32(header, OfsBlockOffsets.FileHeader_ByteSize, (uint)size);
+                RewriteChecksum(header);
+            }
+            catch
+            {
+                FreeDataBlocksFrom(headerBlock, origBlocksNeeded);
+                var header = Image.GetBlockForWrite(headerBlock);
+                BlockWriter.WriteUInt32(header, OfsBlockOffsets.FileHeader_ByteSize, (uint)currentSize);
+                RewriteChecksum(header);
+                throw;
             }
         }
-
-        var header = Image.GetBlockForWrite(headerBlock);
-        BlockWriter.WriteUInt32(header, OfsBlockOffsets.FileHeader_ByteSize, (uint)size);
-        RewriteChecksum(header);
     }
 
     public void Delete(string path)
@@ -641,7 +696,7 @@ public abstract class AmigaHashDirectoryFileSystem : IAmigaFileSystem, IChecksum
             return b;
         }
 
-        throw new IOException("The disk is full.");
+        throw new DiskFullException("The disk is full.");
     }
 
     /// <summary>Marks a block free again, recomputing the bitmap block's checksum.</summary>
