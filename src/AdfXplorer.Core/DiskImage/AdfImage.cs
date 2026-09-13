@@ -42,6 +42,7 @@ public sealed class AdfImage : IDisposable
     private readonly bool _ownsFileBacking;
     private readonly long _startBlock;
     private readonly long _sectorCount;
+    private Dictionary<long, byte[]>? _journal;
 
     /// <summary>Wraps a whole-image byte buffer for block access. The buffer is used directly (not copied), so writes to it outside this class are visible here too.</summary>
     public AdfImage(byte[] data)
@@ -123,7 +124,11 @@ public sealed class AdfImage : IDisposable
     public byte[] ReadBlock(long blockNumber)
     {
         ValidateBlockNumber(blockNumber);
-        long absoluteBlock = _startBlock + blockNumber;
+        return ReadAbsoluteBlock(_startBlock + blockNumber);
+    }
+
+    private byte[] ReadAbsoluteBlock(long absoluteBlock)
+    {
         if (_data is not null)
         {
             return _data.AsSpan((int)absoluteBlock * SectorSize, SectorSize).ToArray();
@@ -191,6 +196,11 @@ public sealed class AdfImage : IDisposable
     {
         ValidateBlockNumber(blockNumber);
         long absoluteBlock = _startBlock + blockNumber;
+        if (_journal is not null && !_journal.ContainsKey(absoluteBlock))
+        {
+            _journal[absoluteBlock] = ReadAbsoluteBlock(absoluteBlock);
+        }
+
         if (_data is not null)
         {
             return _data.AsSpan((int)absoluteBlock * SectorSize, SectorSize);
@@ -230,6 +240,34 @@ public sealed class AdfImage : IDisposable
     /// </summary>
     public void PatchChecksumField(long blockNumber, int fieldOffset, uint value) =>
         BinaryPrimitives.WriteUInt32BigEndian(GetBlockForWrite(blockNumber).Slice(fieldOffset, 4), value);
+
+    /// <summary>
+    /// Starts recording the pre-write content of every block subsequently touched through
+    /// <see cref="GetBlockForWrite"/>, so a multi-block operation (e.g. a file write spanning several
+    /// data/extension/bitmap blocks) can be rolled back atomically with <see cref="RollbackTransaction"/>
+    /// if it fails partway through, instead of the caller having to manually re-derive and undo each
+    /// side effect (block content, allocation-bitmap state, header fields) separately.
+    /// </summary>
+    public void BeginTransaction() => _journal = new Dictionary<long, byte[]>();
+
+    /// <summary>Stops recording and discards the journal, keeping every change made since <see cref="BeginTransaction"/>.</summary>
+    public void CommitTransaction() => _journal = null;
+
+    /// <summary>Restores every block touched since <see cref="BeginTransaction"/> to its content at that time.</summary>
+    public void RollbackTransaction()
+    {
+        if (_journal is null)
+        {
+            return;
+        }
+
+        var snapshot = _journal;
+        _journal = null; // stop recording before restoring, so the writes below aren't journaled themselves
+        foreach (var (absoluteBlock, original) in snapshot)
+        {
+            original.CopyTo(GetBlockForWrite(absoluteBlock - _startBlock));
+        }
+    }
 
     /// <summary>Writes this image's current bytes to <paramref name="path"/>.</summary>
     public void SaveTo(string path)

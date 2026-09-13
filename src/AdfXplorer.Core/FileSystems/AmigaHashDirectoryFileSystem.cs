@@ -426,10 +426,9 @@ public abstract class AmigaHashDirectoryFileSystem : IAmigaFileSystem, IChecksum
         }
 
         int payloadSize = DataBlockPayloadSize;
-        long origSize = BlockReader.ReadUInt32(Image.ReadBlock(headerBlock), OfsBlockOffsets.FileHeader_ByteSize);
-        int origBlocksNeeded = origSize == 0 ? 0 : (int)((origSize - 1) / payloadSize) + 1;
 
         int written = 0;
+        Image.BeginTransaction();
         try
         {
             while (written < data.Length)
@@ -455,14 +454,15 @@ public abstract class AmigaHashDirectoryFileSystem : IAmigaFileSystem, IChecksum
             }
 
             RewriteChecksum(header);
+            Image.CommitTransaction();
             return written;
         }
         catch
         {
-            FreeDataBlocksFrom(headerBlock, origBlocksNeeded);
-            var header = Image.GetBlockForWrite(headerBlock);
-            BlockWriter.WriteUInt32(header, OfsBlockOffsets.FileHeader_ByteSize, (uint)origSize);
-            RewriteChecksum(header);
+            // Undoes every block this write touched - content, allocation-bitmap state, and header/
+            // extension-chain fields alike - so a partial failure (including one that already
+            // overwrote bytes in a pre-existing data block) can't leave the image inconsistent.
+            Image.RollbackTransaction();
             throw;
         }
     }
@@ -495,10 +495,10 @@ public abstract class AmigaHashDirectoryFileSystem : IAmigaFileSystem, IChecksum
                 throw new DiskFullException();
             }
 
-            int origBlocksNeeded = currentSize == 0 ? 0 : (int)((currentSize - 1) / payloadSize) + 1;
             long pos = currentSize;
             Span<byte> zeros = stackalloc byte[payloadSize];
             zeros.Clear();
+            Image.BeginTransaction();
             try
             {
                 while (remaining > 0)
@@ -519,13 +519,11 @@ public abstract class AmigaHashDirectoryFileSystem : IAmigaFileSystem, IChecksum
                 var header = Image.GetBlockForWrite(headerBlock);
                 BlockWriter.WriteUInt32(header, OfsBlockOffsets.FileHeader_ByteSize, (uint)size);
                 RewriteChecksum(header);
+                Image.CommitTransaction();
             }
             catch
             {
-                FreeDataBlocksFrom(headerBlock, origBlocksNeeded);
-                var header = Image.GetBlockForWrite(headerBlock);
-                BlockWriter.WriteUInt32(header, OfsBlockOffsets.FileHeader_ByteSize, (uint)currentSize);
-                RewriteChecksum(header);
+                Image.RollbackTransaction();
                 throw;
             }
         }
