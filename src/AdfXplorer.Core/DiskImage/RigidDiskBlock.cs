@@ -9,7 +9,7 @@ namespace AdfXplorer.Core.DiskImage;
 /// can be fed straight into <see cref="FileSystems.AmigaFileSystemRegistry.Mount"/> - a partition is,
 /// from its own first block onward, structurally identical to a top-level .adf/.hdf.
 /// </summary>
-public sealed record RdbPartition(string DriveName, int StartBlock, int BlockCount);
+public sealed record RdbPartition(string DriveName, long StartBlock, long BlockCount);
 
 /// <summary>
 /// Reads the partition table from an Amiga hard disk image (the common real-world WinUAE ".hdf" case).
@@ -112,12 +112,12 @@ public static class RigidDiskBlock
 
                 // RDB partitions are defined in CHS terms (cylinder range + geometry), not a block range -
                 // convert by treating each cylinder as a fixed-size run of blocks (surfaces * blocksPerTrack).
-                int cylinderBlocks = surfaces * blocksPerTrack;
-                int startBlock = lowCyl * cylinderBlocks;
-                int blockCount = (highCyl - lowCyl + 1) * cylinderBlocks; // highCyl is inclusive
+                long cylinderBlocks = (long)surfaces * blocksPerTrack;
+                long startBlock = (long)lowCyl * cylinderBlocks;
+                long blockCount = (long)(highCyl - lowCyl + 1) * cylinderBlocks; // highCyl is inclusive
 
                 if (cylinderBlocks > 0 && startBlock >= 0 && blockCount > 0
-                    && (long)startBlock + blockCount <= image.SectorCount)
+                    && startBlock + blockCount <= image.SectorCount)
                 {
                     partitions.Add(new RdbPartition(driveName, startBlock, blockCount));
                 }
@@ -297,7 +297,7 @@ public static class RigidDiskBlock
 
     private static int FindRdskBlock(AdfImage image)
     {
-        int limit = Math.Min(SearchLimit, image.SectorCount);
+        int limit = (int)Math.Min((long)SearchLimit, image.SectorCount);
         for (int b = 0; b < limit; b++)
         {
             if (HasSignature(image.ReadBlock(b), 'R', 'D', 'S', 'K'))

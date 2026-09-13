@@ -180,6 +180,12 @@ public sealed class CreateHdfWindow : Form
                 return;
             }
 
+            if (IsOfsOrFfsDosType(dosType) && sizeMb > 4096)
+            {
+                ShowError($"'{driveName}': OFS and FFS partitions cannot exceed 4096 MB (4 GiB).");
+                return;
+            }
+
             byte[]? driverImage = null;
             if (row.DriverPath is not null)
             {
@@ -221,6 +227,9 @@ public sealed class CreateHdfWindow : Form
         dosType = 0;
         return false;
     }
+
+    private static bool IsOfsOrFfsDosType(uint dosType) =>
+        dosType is >= 0x444F5300 and <= 0x444F5305;
 
     /// <summary>Shows the error and cancels the OK button's pending close.</summary>
     private void ShowError(string message)

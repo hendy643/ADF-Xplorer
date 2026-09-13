@@ -19,6 +19,9 @@ namespace AdfXplorer.Core.FileSystems.Ofs;
 /// </summary>
 public sealed class OfsFileSystem : AmigaHashDirectoryFileSystem
 {
+    /// <summary>Maximum number of 512-byte sectors supported by OFS (4 GiB / 8,388,608 sectors).</summary>
+    public new const int MaxSupportedSectors = AmigaHashDirectoryFileSystem.MaxSupportedSectors;
+
     private OfsFileSystem(AdfImage image, int rootBlock) : base(image, rootBlock)
     {
     }
@@ -33,7 +36,7 @@ public sealed class OfsFileSystem : AmigaHashDirectoryFileSystem
     /// </summary>
     public static IAmigaFileSystem? TryMount(AdfImage image)
     {
-        if (image.SectorCount < 2)
+        if (image.SectorCount < 2 || image.SectorCount > MaxSupportedSectors)
         {
             return null;
         }
@@ -53,19 +56,7 @@ public sealed class OfsFileSystem : AmigaHashDirectoryFileSystem
             return null;
         }
 
-        int rootBlockNumber = BlockReader.ReadInt32(boot, OfsBlockOffsets.Root_BootBlockRootPointer);
-        if (rootBlockNumber <= 0 || rootBlockNumber >= image.SectorCount)
-        {
-            return null;
-        }
-
-        var root = image.ReadBlock(rootBlockNumber);
-        if (BlockReader.ReadInt32(root, OfsBlockOffsets.Type) != BlockType.Header)
-        {
-            return null;
-        }
-
-        if (BlockReader.ReadInt32(root, OfsBlockOffsets.SecType) != SecType.Root)
+        if (!AmigaDosRootBlock.TryFind(image, out int rootBlockNumber))
         {
             return null;
         }
@@ -74,40 +65,11 @@ public sealed class OfsFileSystem : AmigaHashDirectoryFileSystem
     }
 
     /// <summary>
-    /// Reads a file's contents by walking its OFS data-block chain (each block stores its own
-    /// <c>next_data</c> pointer, unlike FFS's block-number table) - see
-    /// <see cref="Ffs.FfsFileSystem.OpenFileData"/> for the contrasting FFS layout.
+    /// Reads a file's contents by streaming data blocks on demand through <see cref="OfsFileDataStream"/>,
+    /// keeping only data-block sector indices in memory.
     /// </summary>
-    protected override Stream OpenFileData(int headerBlock, long size)
-    {
-        var header = Image.ReadBlock(headerBlock);
-        var buffer = new byte[size];
-
-        int nextData = BlockReader.ReadInt32(header, OfsBlockOffsets.FileHeader_FirstData);
-        int written = 0;
-        while (nextData != 0 && written < size)
-        {
-            if (!IsBlockAccepted(nextData, "file data block"))
-            {
-                break; // Reject policy: truncate the stream at whatever was already read.
-            }
-
-            var data = Image.ReadBlock(nextData);
-            int dataSize = (int)BlockReader.ReadUInt32(data, OfsBlockOffsets.Data_DataSize);
-            dataSize = Math.Min(dataSize, (int)size - written);
-            if (dataSize > 0)
-            {
-                data.Slice(OfsBlockOffsets.Data_Payload, dataSize).CopyTo(buffer.AsSpan(written));
-                written += dataSize;
-            }
-
-            nextData = BlockReader.ReadInt32(data, OfsBlockOffsets.Data_NextData);
-        }
-
-        return written == size
-            ? new MemoryStream(buffer, writable: false)
-            : new MemoryStream(buffer, 0, written, writable: false);
-    }
+    protected override Stream OpenFileData(int headerBlock, long size) =>
+        new OfsFileDataStream(Image, headerBlock, size, IsBlockAccepted);
 
     protected override IEnumerable<ChecksumReport> ScanFileDataBlocks(int headerBlock, string fileLabel)
     {

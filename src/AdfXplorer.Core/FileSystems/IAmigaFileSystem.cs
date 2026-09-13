@@ -11,6 +11,9 @@ namespace AdfXplorer.Core.FileSystems;
 /// </summary>
 public interface IAmigaFileSystem
 {
+    /// <summary>The filesystem name reported to host platforms, for example "Amiga OFS".</summary>
+    string FileSystemName { get; }
+
     string VolumeLabel { get; }
 
     IReadOnlyList<AmigaDirectoryEntry> ListDirectory(string path);

@@ -1,0 +1,6 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="Installer" type="IssRunConfiguration" factoryName="IssRunConfiguration" scriptPath="$PROJECT_DIR$/src/AdfXplorer.Installer/AdfXplorer.iss" languageOverride="" debugOutput="true" buildConfigurationName="Debug" persistentTempOutputDir="">
+    <envs />
+    <method v="2" />
+  </configuration>
+</component>

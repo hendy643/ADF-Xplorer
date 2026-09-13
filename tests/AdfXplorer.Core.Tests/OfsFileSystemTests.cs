@@ -1,3 +1,4 @@
+using System.Text;
 using AdfXplorer.Core.DiskImage;
 using AdfXplorer.Core.FileSystems;
 using AdfXplorer.Core.FileSystems.Ofs;
@@ -18,6 +19,26 @@ public class OfsFileSystemTests
     public void VolumeLabel_MatchesBuiltImage()
     {
         var image = TestImageBuilder.BuildMinimalOfsImage("TestDisk", out _, out _);
+        var fs = Mount(image);
+
+        Assert.Equal("TestDisk", fs.VolumeLabel);
+    }
+
+    [Fact]
+    public void FileSystemName_ReportsAmigaOfs()
+    {
+        var image = TestImageBuilder.BuildMinimalOfsImage("TestDisk", out _, out _);
+
+        Assert.Equal("Amiga OFS", Mount(image).FileSystemName);
+    }
+
+    [Fact]
+    public void TryMount_UsesMidpointRootWhenBootPointerIsZero()
+    {
+        var image = TestImageBuilder.BuildMinimalOfsImage("TestDisk", out _, out _);
+        Array.Clear(image, 8, 4);
+        ChecksumTestHelper.WriteBootChecksum(image);
+
         var fs = Mount(image);
 
         Assert.Equal("TestDisk", fs.VolumeLabel);
@@ -59,6 +80,24 @@ public class OfsFileSystemTests
         using var reader = new StreamReader(stream);
 
         Assert.Equal(fileContent, reader.ReadToEnd());
+    }
+
+    [Fact]
+    public void OpenRead_RootFile_SupportsSeekingAndStreaming()
+    {
+        var image = TestImageBuilder.BuildMinimalOfsImage("TestDisk", out var fileContent, out _);
+        var fs = Mount(image);
+
+        using var stream = fs.OpenRead(TestImageBuilder.FileName);
+        Assert.True(stream.CanSeek);
+        Assert.True(stream.CanRead);
+        Assert.False(stream.CanWrite);
+
+        stream.Seek(1, SeekOrigin.Begin);
+        byte[] buf = new byte[4];
+        int read = stream.Read(buf, 0, 4);
+        Assert.Equal(4, read);
+        Assert.Equal(fileContent[1..5], Encoding.Latin1.GetString(buf));
     }
 
     [Fact]
@@ -128,5 +167,89 @@ public class OfsFileSystemTests
         imageBytes[3] = flags;
 
         Assert.Null(OfsFileSystem.TryMount(new AdfImage(imageBytes)));
+    }
+
+    [Fact]
+    public void TryMount_WhenSectorCountExceeds4GiB_ReturnsNull()
+    {
+        string tempPath = Path.GetTempFileName();
+        try
+        {
+            using (var fs = new FileStream(tempPath, FileMode.Open, FileAccess.ReadWrite))
+            {
+                long sectorCount = (long)OfsFileSystem.MaxSupportedSectors + 1;
+                fs.SetLength(sectorCount * AdfImage.SectorSize);
+
+                byte[] bootBlock = new byte[1024];
+                bootBlock[0] = (byte)'D';
+                bootBlock[1] = (byte)'O';
+                bootBlock[2] = (byte)'S';
+                bootBlock[3] = 0; // OFS
+                System.Buffers.Binary.BinaryPrimitives.WriteInt32BigEndian(bootBlock.AsSpan(8, 4), (int)(sectorCount / 2));
+                ChecksumTestHelper.WriteBootChecksum(bootBlock);
+
+                fs.Position = 0;
+                fs.Write(bootBlock);
+            }
+
+            using var image = AdfImage.FromFile(tempPath);
+            Assert.Equal(OfsFileSystem.MaxSupportedSectors + 1, image.SectorCount);
+            Assert.Null(OfsFileSystem.TryMount(image));
+        }
+        finally
+        {
+            File.Delete(tempPath);
+        }
+    }
+
+    [Fact]
+    public void TryMount_WhenSectorCountIsExactly4GiB_MountsSuccessfully()
+    {
+        string tempPath = Path.GetTempFileName();
+        try
+        {
+            int sectorCount = OfsFileSystem.MaxSupportedSectors;
+            int rootBlock = sectorCount / 2;
+
+            using (var fs = new FileStream(tempPath, FileMode.Open, FileAccess.ReadWrite))
+            {
+                fs.SetLength((long)sectorCount * AdfImage.SectorSize);
+
+                byte[] boot = new byte[1024];
+                boot[0] = (byte)'D';
+                boot[1] = (byte)'O';
+                boot[2] = (byte)'S';
+                boot[3] = 0; // OFS
+                System.Buffers.Binary.BinaryPrimitives.WriteInt32BigEndian(boot.AsSpan(8, 4), rootBlock);
+                ChecksumTestHelper.WriteBootChecksum(boot);
+
+                byte[] root = new byte[512];
+                System.Buffers.Binary.BinaryPrimitives.WriteInt32BigEndian(root.AsSpan(0, 4), 2); // Header
+                System.Buffers.Binary.BinaryPrimitives.WriteInt32BigEndian(root.AsSpan(12, 4), 72); // HashTableSize
+                System.Buffers.Binary.BinaryPrimitives.WriteInt32BigEndian(root.AsSpan(312, 4), -1); // BitmapFlag
+                System.Buffers.Binary.BinaryPrimitives.WriteInt32BigEndian(root.AsSpan(316, 4), rootBlock + 1); // BitmapPages
+                root[432] = 7; // Name length
+                System.Text.Encoding.Latin1.GetBytes("4GiBOfs").CopyTo(root.AsSpan(433, 7));
+                System.Buffers.Binary.BinaryPrimitives.WriteInt32BigEndian(root.AsSpan(508, 4), 1); // SecType.Root
+                ChecksumTestHelper.WriteNormalChecksum(root, 0);
+
+                fs.Position = 0;
+                fs.Write(boot);
+
+                fs.Position = (long)rootBlock * AdfImage.SectorSize;
+                fs.Write(root);
+            }
+
+            using var image = AdfImage.FromFile(tempPath);
+            Assert.Equal(sectorCount, image.SectorCount);
+
+            var mounted = OfsFileSystem.TryMount(image);
+            Assert.NotNull(mounted);
+            Assert.Equal("4GiBOfs", mounted!.VolumeLabel);
+        }
+        finally
+        {
+            File.Delete(tempPath);
+        }
     }
 }
