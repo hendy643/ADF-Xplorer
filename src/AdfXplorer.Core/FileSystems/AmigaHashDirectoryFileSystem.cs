@@ -20,12 +20,24 @@ public abstract class AmigaHashDirectoryFileSystem : IAmigaFileSystem, IChecksum
     /// <see cref="ValidateChecksums"/>.</summary>
     private enum ChecksumPolicy { Ignore, Reject }
 
+    /// <summary>
+    /// Maximum number of 512-byte sectors supported by 32-bit Amiga OFS/FFS formats (4 GiB / 8,388,608 sectors).
+    /// </summary>
+    public const int MaxSupportedSectors = 8_388_608;
+
     protected readonly AdfImage Image;
     protected readonly int RootBlock;
     private ChecksumPolicy _laterEntryPolicy = ChecksumPolicy.Ignore;
 
     protected AmigaHashDirectoryFileSystem(AdfImage image, int rootBlock)
     {
+        if (image.SectorCount > MaxSupportedSectors)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(image),
+                $"Image sector count {image.SectorCount:N0} exceeds the 4 GiB limit ({MaxSupportedSectors:N0} sectors).");
+        }
+
         Image = image;
         RootBlock = rootBlock;
     }

@@ -66,7 +66,7 @@ fix or reject each mismatch) pass over an entire image, including every partitio
 
 ## Installation
 
-Download the latest `AdfXplorer-<version>.msi` from the
+Download the latest `AdfXplorer-Setup-<version>.exe` from the
 [Releases](../../releases) page and run it. That installs the app, adds a Start Menu shortcut, and
 registers `.adf`/`.hdf` as file types AdfXplorer opens — no extra setup step.
 
@@ -92,8 +92,8 @@ Requires the .NET 10 SDK. From the repo root:
 .\build.ps1
 ```
 
-This builds the solution, publishes the self-contained app, and builds the Windows Installer
-(`.msi`) package. See `build.ps1 -?`-equivalent parameters (`-Configuration`, `-Platform`,
+This builds the solution, publishes the app, and builds the Inno Setup installer
+package. See `build.ps1 -?`-equivalent parameters (`-Configuration`, `-Platform`,
 `-Version`) for options.
 
 ## License

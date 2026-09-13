@@ -155,12 +155,12 @@ public static class RigidDiskBlockWriter
         }
 
         // Reserve the control-block area up to the next cylinder boundary; partitions start there.
-        int controlBlocks = RoundUpToCylinder(nextBlock);
-        int firstPartitionStart = controlBlocks;
+        long controlBlocks = RoundUpToCylinder(nextBlock);
+        long firstPartitionStart = controlBlocks;
 
-        var partitionStarts = new int[partitions.Count];
-        var partitionBlockCounts = new int[partitions.Count];
-        int cursor = firstPartitionStart;
+        var partitionStarts = new long[partitions.Count];
+        var partitionBlockCounts = new long[partitions.Count];
+        long cursor = firstPartitionStart;
         for (int i = 0; i < partitions.Count; i++)
         {
             var spec = partitions[i];
@@ -170,32 +170,31 @@ public static class RigidDiskBlockWriter
             }
 
             long sizeBytes = (long)spec.SizeMegabytes * 1024 * 1024;
-            int blocks = RoundUpToCylinder((int)((sizeBytes + SectorSize - 1) / SectorSize));
+            long sectorCount = (sizeBytes + SectorSize - 1) / SectorSize;
+            if (IsBuiltInOfsOrFfs(spec.DosType, out _) && sectorCount > AdfXplorer.Core.FileSystems.AmigaHashDirectoryFileSystem.MaxSupportedSectors)
+            {
+                throw new ArgumentException(
+                    $"Partition '{spec.DriveName}' ({spec.SizeMegabytes:N0} MB) exceeds the 4 GiB limit (4,096 MB) for OFS/FFS filesystems.",
+                    nameof(partitions));
+            }
+
+            long blocks = RoundUpToCylinder(sectorCount);
 
             partitionStarts[i] = cursor;
             partitionBlockCounts[i] = blocks;
             cursor += blocks;
         }
 
-        int totalBlocks = cursor;
-        long totalBytes = (long)totalBlocks * SectorSize;
-        if (totalBytes > Array.MaxLength)
-        {
-            throw new ArgumentException(
-                $"Total image size ({totalBytes:N0} bytes) exceeds the {Array.MaxLength:N0}-byte " +
-                "(~2 GB) limit this in-memory image format supports - use smaller or fewer partitions.",
-                nameof(partitions));
-        }
+        long totalBlocks = cursor;
+        var image = AdfImage.CreateEmpty(totalBlocks);
 
-        var data = new byte[totalBytes];
-
-        WriteRdsk(data, rdskBlock, firstPartBlock, firstFshdBlock);
+        WriteRdsk(image, rdskBlock, firstPartBlock, firstFshdBlock);
 
         for (int i = 0; i < partitions.Count; i++)
         {
             int next = i + 1 < partitions.Count ? partBlocks[i + 1] : -1;
             WritePart(
-                data, partBlocks[i], next, partitions[i], partitionStarts[i], partitionBlockCounts[i]);
+                image, partBlocks[i], next, partitions[i], partitionStarts[i], partitionBlockCounts[i]);
         }
 
         for (int i = 0; i < partitions.Count; i++)
@@ -206,7 +205,7 @@ public static class RigidDiskBlockWriter
             }
 
             int nextFshd = FindNextFshd(fshdBlocks, i);
-            WriteFshdAndDriverChain(data, fshdBlock, lsegChains[i], nextFshd, partitions[i]);
+            WriteFshdAndDriverChain(image, fshdBlock, lsegChains[i], nextFshd, partitions[i]);
         }
 
         for (int i = 0; i < partitions.Count; i++)
@@ -215,12 +214,12 @@ public static class RigidDiskBlockWriter
             if (IsBuiltInOfsOrFfs(spec.DosType, out byte bootFlags))
             {
                 AmigaBlankVolumeWriter.WriteBlankInto(
-                    data, partitionStarts[i], partitionBlockCounts[i], spec.DriveName, bootFlags);
+                    image, partitionStarts[i], (int)partitionBlockCounts[i], spec.DriveName, bootFlags);
             }
             // Any other DosType: reserved, unformatted (zeroed) space - see class remarks.
         }
 
-        return new AdfImage(data);
+        return image;
     }
 
     private static int FindNextFshd(int?[] fshdBlocks, int fromIndexExclusive)
@@ -249,59 +248,59 @@ public static class RigidDiskBlockWriter
         return false;
     }
 
-    private static int RoundUpToCylinder(int blocks) =>
+    private static long RoundUpToCylinder(long blocks) =>
         ((blocks + CylinderBlocks - 1) / CylinderBlocks) * CylinderBlocks;
 
-    private static void WriteRdsk(byte[] data, int rdskBlock, int firstPartBlock, int firstFshdBlock)
+    private static void WriteRdsk(AdfImage image, int rdskBlock, int firstPartBlock, int firstFshdBlock)
     {
-        int off = rdskBlock * SectorSize;
-        WriteSignature(data, off, 'R', 'D', 'S', 'K');
-        BlockWriter.WriteInt32(data.AsSpan(off), Rdsk_SummedLongs, RdbSummedLongs);
-        BlockWriter.WriteInt32(data.AsSpan(off), Rdsk_HostId, 7); // SCSI host ID 7 - the conventional default, unused by this in-memory image
-        BlockWriter.WriteInt32(data.AsSpan(off), Rdsk_BlockBytes, SectorSize);
-        BlockWriter.WriteInt32(data.AsSpan(off), Rdsk_Flags, 0x17); // rdb_Flags: disk park/spinup/etc bits AmigaOS checks - 0x17 is amitools' standard default
-        BlockWriter.WriteInt32(data.AsSpan(off), Rdsk_PartitionList, firstPartBlock);
-        BlockWriter.WriteInt32(data.AsSpan(off), Rdsk_FileSysHeaderList, firstFshdBlock < 0 ? NoBlock : firstFshdBlock);
-        BlockWriter.WriteInt32(data.AsSpan(off), Rdsk_InitCode, NoBlock);
+        var block = image.GetBlockForWrite(rdskBlock);
+        WriteSignature(block, 'R', 'D', 'S', 'K');
+        BlockWriter.WriteInt32(block, Rdsk_SummedLongs, RdbSummedLongs);
+        BlockWriter.WriteInt32(block, Rdsk_HostId, 7); // SCSI host ID 7 - the conventional default, unused by this in-memory image
+        BlockWriter.WriteInt32(block, Rdsk_BlockBytes, SectorSize);
+        BlockWriter.WriteInt32(block, Rdsk_Flags, 0x17); // rdb_Flags: disk park/spinup/etc bits AmigaOS checks - 0x17 is amitools' standard default
+        BlockWriter.WriteInt32(block, Rdsk_PartitionList, firstPartBlock);
+        BlockWriter.WriteInt32(block, Rdsk_FileSysHeaderList, firstFshdBlock < 0 ? NoBlock : firstFshdBlock);
+        BlockWriter.WriteInt32(block, Rdsk_InitCode, NoBlock);
 
-        WriteChecksum(data, off, Rdsk_ChkSum);
+        WriteChecksum(block, Rdsk_ChkSum);
     }
 
     private static void WritePart(
-        byte[] data, int block, int next, HdfPartitionSpec spec, int startBlock, int blockCount)
+        AdfImage image, int blockNum, int next, HdfPartitionSpec spec, long startBlock, long blockCount)
     {
-        int off = block * SectorSize;
-        WriteSignature(data, off, 'P', 'A', 'R', 'T');
-        BlockWriter.WriteInt32(data.AsSpan(off), Part_SummedLongs, RdbSummedLongs);
-        BlockWriter.WriteInt32(data.AsSpan(off), Part_HostId, 7);
-        BlockWriter.WriteInt32(data.AsSpan(off), Part_Next, next < 0 ? NoBlock : next);
-        BlockWriter.WriteInt32(data.AsSpan(off), Part_Flags, 0);
-        BlockWriter.WriteInt32(data.AsSpan(off), Part_DevFlags, 0);
+        var block = image.GetBlockForWrite(blockNum);
+        WriteSignature(block, 'P', 'A', 'R', 'T');
+        BlockWriter.WriteInt32(block, Part_SummedLongs, RdbSummedLongs);
+        BlockWriter.WriteInt32(block, Part_HostId, 7);
+        BlockWriter.WriteInt32(block, Part_Next, next < 0 ? NoBlock : next);
+        BlockWriter.WriteInt32(block, Part_Flags, 0);
+        BlockWriter.WriteInt32(block, Part_DevFlags, 0);
         BlockWriter.WriteBcplString(
-            data.AsSpan(off), Part_DriveNameLen, Part_DriveNameData, spec.DriveName, Part_DriveNameMaxLength);
+            block, Part_DriveNameLen, Part_DriveNameData, spec.DriveName, Part_DriveNameMaxLength);
 
-        int cylinderBlocks = CylinderBlocks;
-        int lowCyl = startBlock / cylinderBlocks;
-        int highCyl = startBlock / cylinderBlocks + blockCount / cylinderBlocks - 1;
+        long cylinderBlocks = CylinderBlocks;
+        long lowCyl = startBlock / cylinderBlocks;
+        long highCyl = startBlock / cylinderBlocks + blockCount / cylinderBlocks - 1;
 
-        BlockWriter.WriteInt32(data.AsSpan(off), Part_Env_Size, 16); // SIZE_DEFAULT_ENV
-        BlockWriter.WriteInt32(data.AsSpan(off), Part_Env_BlockSize, 128); // longs per block
-        BlockWriter.WriteInt32(data.AsSpan(off), Part_Env_Surfaces, 1);
-        BlockWriter.WriteInt32(data.AsSpan(off), Part_Env_BlocksPerTrack, cylinderBlocks);
-        BlockWriter.WriteInt32(data.AsSpan(off), Part_Env_Reserved, 2);
-        BlockWriter.WriteInt32(data.AsSpan(off), Part_Env_Interleave, 0);
-        BlockWriter.WriteInt32(data.AsSpan(off), Part_Env_LowCyl, lowCyl);
-        BlockWriter.WriteInt32(data.AsSpan(off), Part_Env_HighCyl, highCyl);
-        BlockWriter.WriteInt32(data.AsSpan(off), Part_Env_NumBuffer, 30);
-        BlockWriter.WriteInt32(data.AsSpan(off), Part_Env_MaxTransfer, unchecked((int)0xFFFFFF));
-        BlockWriter.WriteInt32(data.AsSpan(off), Part_Env_Mask, unchecked((int)0x7FFFFFFE));
-        BlockWriter.WriteUInt32(data.AsSpan(off), Part_Env_DosType, spec.DosType);
+        BlockWriter.WriteInt32(block, Part_Env_Size, 16); // SIZE_DEFAULT_ENV
+        BlockWriter.WriteInt32(block, Part_Env_BlockSize, 128); // longs per block
+        BlockWriter.WriteInt32(block, Part_Env_Surfaces, 1);
+        BlockWriter.WriteInt32(block, Part_Env_BlocksPerTrack, (int)cylinderBlocks);
+        BlockWriter.WriteInt32(block, Part_Env_Reserved, 2);
+        BlockWriter.WriteInt32(block, Part_Env_Interleave, 0);
+        BlockWriter.WriteInt32(block, Part_Env_LowCyl, (int)lowCyl);
+        BlockWriter.WriteInt32(block, Part_Env_HighCyl, (int)highCyl);
+        BlockWriter.WriteInt32(block, Part_Env_NumBuffer, 30);
+        BlockWriter.WriteInt32(block, Part_Env_MaxTransfer, unchecked((int)0xFFFFFF));
+        BlockWriter.WriteInt32(block, Part_Env_Mask, unchecked((int)0x7FFFFFFE));
+        BlockWriter.WriteUInt32(block, Part_Env_DosType, spec.DosType);
 
-        WriteChecksum(data, off, Part_ChkSum);
+        WriteChecksum(block, Part_ChkSum);
     }
 
     private static void WriteFshdAndDriverChain(
-        byte[] data, int fshdBlock, List<int> lsegBlocks, int nextFshdBlock, HdfPartitionSpec spec)
+        AdfImage image, int fshdBlock, List<int> lsegBlocks, int nextFshdBlock, HdfPartitionSpec spec)
     {
         byte[] driver = spec.DriverImage!;
 
@@ -311,47 +310,46 @@ public static class RigidDiskBlockWriter
             int rawLen = Math.Min(Lseg_PayloadPerBlock, driver.Length - start);
             int paddedLen = ((rawLen + 3) / 4) * 4; // hunk-format executables are always longword-sized.
 
-            int block = lsegBlocks[c];
-            int off = block * SectorSize;
-            WriteSignature(data, off, 'L', 'S', 'E', 'G');
-            BlockWriter.WriteInt32(data.AsSpan(off), Lseg_Size, (Lseg_DataStart + paddedLen) / 4);
-            BlockWriter.WriteInt32(data.AsSpan(off), Lseg_HostId, 0);
+            int blockNum = lsegBlocks[c];
+            var lseg = image.GetBlockForWrite(blockNum);
+            WriteSignature(lseg, 'L', 'S', 'E', 'G');
+            BlockWriter.WriteInt32(lseg, Lseg_Size, (Lseg_DataStart + paddedLen) / 4);
+            BlockWriter.WriteInt32(lseg, Lseg_HostId, 0);
 
             int next = c + 1 < lsegBlocks.Count ? lsegBlocks[c + 1] : NoBlock;
-            BlockWriter.WriteInt32(data.AsSpan(off), Lseg_Next, next);
+            BlockWriter.WriteInt32(lseg, Lseg_Next, next);
 
-            driver.AsSpan(start, rawLen).CopyTo(data.AsSpan(off + Lseg_DataStart, rawLen));
+            driver.AsSpan(start, rawLen).CopyTo(lseg.Slice(Lseg_DataStart, rawLen));
 
-            WriteChecksum(data, off, Lseg_ChkSum);
+            WriteChecksum(lseg, Lseg_ChkSum);
         }
 
-        int fOff = fshdBlock * SectorSize;
-        WriteSignature(data, fOff, 'F', 'S', 'H', 'D');
-        BlockWriter.WriteInt32(data.AsSpan(fOff), Fshd_Size, Fshd_FixedSizeLongs);
-        BlockWriter.WriteInt32(data.AsSpan(fOff), Fshd_HostId, 0);
-        BlockWriter.WriteInt32(data.AsSpan(fOff), Fshd_Next, nextFshdBlock < 0 ? NoBlock : nextFshdBlock);
-        BlockWriter.WriteInt32(data.AsSpan(fOff), Fshd_Flags, 0);
-        BlockWriter.WriteUInt32(data.AsSpan(fOff), Fshd_DosType, spec.DosType);
-        BlockWriter.WriteInt32(data.AsSpan(fOff), Fshd_Version, 0);
-        BlockWriter.WriteUInt32(data.AsSpan(fOff), Fshd_PatchFlags, Fshd_PatchFlag_SegListBlk);
-        BlockWriter.WriteInt32(data.AsSpan(fOff), Fshd_Dn_StackSize, 0x2000);
-        BlockWriter.WriteInt32(data.AsSpan(fOff), Fshd_Dn_SegListBlk, lsegBlocks[0]);
-        BlockWriter.WriteInt32(data.AsSpan(fOff), Fshd_Dn_GlobalVec, NoBlock);
+        var fshd = image.GetBlockForWrite(fshdBlock);
+        WriteSignature(fshd, 'F', 'S', 'H', 'D');
+        BlockWriter.WriteInt32(fshd, Fshd_Size, Fshd_FixedSizeLongs);
+        BlockWriter.WriteInt32(fshd, Fshd_HostId, 0);
+        BlockWriter.WriteInt32(fshd, Fshd_Next, nextFshdBlock < 0 ? NoBlock : nextFshdBlock);
+        BlockWriter.WriteInt32(fshd, Fshd_Flags, 0);
+        BlockWriter.WriteUInt32(fshd, Fshd_DosType, spec.DosType);
+        BlockWriter.WriteInt32(fshd, Fshd_Version, 0);
+        BlockWriter.WriteUInt32(fshd, Fshd_PatchFlags, Fshd_PatchFlag_SegListBlk);
+        BlockWriter.WriteInt32(fshd, Fshd_Dn_StackSize, 0x2000);
+        BlockWriter.WriteInt32(fshd, Fshd_Dn_SegListBlk, lsegBlocks[0]);
+        BlockWriter.WriteInt32(fshd, Fshd_Dn_GlobalVec, NoBlock);
 
-        WriteChecksum(data, fOff, Fshd_ChkSum);
+        WriteChecksum(fshd, Fshd_ChkSum);
     }
 
-    private static void WriteSignature(byte[] data, int offset, char a, char b, char c, char d)
+    private static void WriteSignature(Span<byte> block, char a, char b, char c, char d)
     {
-        data[offset] = (byte)a;
-        data[offset + 1] = (byte)b;
-        data[offset + 2] = (byte)c;
-        data[offset + 3] = (byte)d;
+        block[0] = (byte)a;
+        block[1] = (byte)b;
+        block[2] = (byte)c;
+        block[3] = (byte)d;
     }
 
-    private static void WriteChecksum(byte[] data, int blockOffset, int checksumFieldOffset)
+    private static void WriteChecksum(Span<byte> block, int checksumFieldOffset)
     {
-        var block = data.AsSpan(blockOffset, SectorSize);
         uint checksum = BlockReader.ComputeNormalChecksum(block, checksumFieldOffset, RdbSummedLongs);
         BlockWriter.WriteUInt32(block, checksumFieldOffset, checksum);
     }

@@ -523,3 +523,4 @@ FodyWeavers.xsd
 
 .claude
 .vs/
+.build/

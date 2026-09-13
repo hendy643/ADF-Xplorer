@@ -140,15 +140,95 @@ public class RigidDiskBlockWriterTests
     }
 
     [Fact]
-    public void Create_TotalSizeExceedsArrayLimit_ThrowsDescriptiveException()
+    public void Create_TotalSizeExceeding2Gb_CreatesSuccessfully()
+    {
+        var image = RigidDiskBlockWriter.Create(
+        [
+            new HdfPartitionSpec("DH0", SizeMegabytes: 1500, Dos1Ffs),
+            new HdfPartitionSpec("DH1", SizeMegabytes: 1500, Dos1Ffs),
+        ]);
+
+        var (partitions, repaired) = RigidDiskBlock.TryReadPartitions(image);
+        Assert.NotNull(partitions);
+        Assert.False(repaired);
+        Assert.Equal(2, partitions!.Count);
+        Assert.True(image.SizeInBytes > 3_000_000_000L);
+    }
+
+    [Fact]
+    public void Create_4GiBPartition_IsReadableAndMountable()
+    {
+        var image = RigidDiskBlockWriter.Create(
+        [
+            new HdfPartitionSpec("Games", SizeMegabytes: 4096, Dos1Ffs)
+        ]);
+
+        var (partitions, repaired) = RigidDiskBlock.TryReadPartitions(image);
+        Assert.NotNull(partitions);
+        Assert.False(repaired);
+        Assert.Single(partitions!);
+        Assert.Equal("Games", partitions![0].DriveName);
+
+        var window = image.CreateWindow(partitions[0].StartBlock, partitions[0].BlockCount);
+        var fs = AmigaFileSystemRegistry.CreateDefault().Mount(window);
+        Assert.Equal("Games", fs.VolumeLabel);
+        Assert.Empty(fs.ListDirectory(""));
+    }
+
+    [Fact]
+    public void Create_MultiPartitionExceeding8GiB_CreatesAndPartitionsCorrectly()
+    {
+        var image = RigidDiskBlockWriter.Create(
+        [
+            new HdfPartitionSpec("DH0", SizeMegabytes: 4096, Dos1Ffs),
+            new HdfPartitionSpec("DH1", SizeMegabytes: 4096, Dos1Ffs),
+            new HdfPartitionSpec("DH2", SizeMegabytes: 4096, Dos1Ffs),
+        ]);
+
+        var (partitions, repaired) = RigidDiskBlock.TryReadPartitions(image);
+        Assert.NotNull(partitions);
+        Assert.False(repaired);
+        Assert.Equal(3, partitions!.Count);
+        Assert.Equal("DH0", partitions[0].DriveName);
+        Assert.Equal("DH1", partitions[1].DriveName);
+        Assert.Equal("DH2", partitions[2].DriveName);
+        Assert.True(image.SizeInBytes >= 12L * 1024 * 1024 * 1024);
+
+        // Mount each partition window and verify filesystem
+        for (int i = 0; i < 3; i++)
+        {
+            var window = image.CreateWindow(partitions[i].StartBlock, partitions[i].BlockCount);
+            var fs = AmigaFileSystemRegistry.CreateDefault().Mount(window);
+            Assert.Equal($"DH{i}", fs.VolumeLabel);
+            Assert.Empty(fs.ListDirectory(""));
+        }
+    }
+
+    [Theory]
+    [InlineData(Dos0Ofs)]
+    [InlineData(Dos1Ffs)]
+    public void Create_OfsOrFfsPartitionExceeds4096Mb_ThrowsArgumentException(uint dosType)
     {
         var ex = Assert.Throws<ArgumentException>(() => RigidDiskBlockWriter.Create(
         [
-            new HdfPartitionSpec("DH0", SizeMegabytes: 1024, Dos0Ofs + 5),
-            new HdfPartitionSpec("DH1", SizeMegabytes: 1024, Dos0Ofs + 5),
+            new HdfPartitionSpec("DH0", SizeMegabytes: 4097, dosType)
         ]));
 
-        Assert.Contains("exceeds", ex.Message);
+        Assert.Contains("exceeds the 4 GiB limit", ex.Message);
+    }
+
+    [Fact]
+    public void Create_ForeignDosTypeExceeding4096Mb_DoesNotThrowOfsFfsLimitException()
+    {
+        var image = RigidDiskBlockWriter.Create(
+        [
+            new HdfPartitionSpec("SFSVol", SizeMegabytes: 5000, SfsZero)
+        ]);
+
+        var (partitions, _) = RigidDiskBlock.TryReadPartitions(image);
+        Assert.NotNull(partitions);
+        Assert.Single(partitions!);
+        Assert.Equal("SFSVol", partitions![0].DriveName);
     }
 
     private static string Signature(ReadOnlySpan<byte> block) =>

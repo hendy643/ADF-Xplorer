@@ -80,4 +80,27 @@ public class OfsFileSystemWriterTests
         uint word = BinaryPrimitives.ReadUInt32BigEndian(bitmapBlock.Slice(4 + mapIndex * 4, 4));
         return (word & (1u << bitPos)) != 0;
     }
+
+    [Fact]
+    public void CreateBlank_WhenSectorCountIs4GiB_CreatesAndMountsSuccessfully()
+    {
+        var image = OfsFileSystemWriter.CreateBlank(8_388_608, "BigOfsDisk");
+        var fs = OfsFileSystem.TryMount(image);
+        Assert.NotNull(fs);
+        Assert.Equal("BigOfsDisk", fs!.VolumeLabel);
+    }
+
+    [Fact]
+    public void CreateBlank_WhenSectorCountExceeds4GiB_ThrowsArgumentOutOfRangeException()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            OfsFileSystemWriter.CreateBlank(8_388_609, "OversizedDisk"));
+    }
+
+    [Fact]
+    public void CreateBlank_WhenSectorCountLessThan4_ThrowsArgumentOutOfRangeException()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            OfsFileSystemWriter.CreateBlank(3, "TooSmallDisk"));
+    }
 }

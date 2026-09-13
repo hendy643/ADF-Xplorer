@@ -3,20 +3,16 @@
     <Platform Name="Any CPU" />
     <Platform Name="x64" />
   </Configurations>
+  <Folder Name="/Misc/">
+    <File Path="build.ps1" />
+    <File Path="Directory.Build.props" />
+    <File Path="src/AdfXplorer.Installer/AdfXplorer.iss" />
+  </Folder>
   <Folder Name="/src/">
     <Project Path="src/AdfXplorer.Core/AdfXplorer.Core.csproj">
       <Platform Solution="*|x64" Project="x64" />
     </Project>
     <Project Path="src/AdfXplorer.WinFsp/AdfXplorer.WinFsp.csproj">
-      <Platform Solution="*|x64" Project="x64" />
-    </Project>
-    <Project Path="src/AdfXplorer.Installer/AdfXplorer.Installer.wixproj">
-      <Platform Solution="*|x64" Project="x64" />
-    </Project>
-    <Project Path="src/AdfXplorer.WinFspInstaller/AdfXplorer.WinFspInstaller.csproj">
-      <Platform Solution="*|x64" Project="x64" />
-    </Project>
-    <Project Path="src/AdfXplorer.Bundle/AdfXplorer.Bundle.wixproj">
       <Platform Solution="*|x64" Project="x64" />
     </Project>
   </Folder>
