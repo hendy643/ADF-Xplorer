@@ -51,10 +51,18 @@ public sealed unsafe class AdfFileSystem : IFileSystem
     /// <param name="topLevelImage">The un-windowed root image to persist on every mutation - see class remarks.</param>
     /// <param name="sourcePath">Path this image was loaded from and is saved back to.</param>
     /// <param name="volumeSizeBytes">Reported total volume size (the windowed size, not the whole-image size).</param>
-    public AdfFileSystem(IAmigaFileSystem fs, AdfImage topLevelImage, string sourcePath, long volumeSizeBytes)
+    /// <param name="forceReadOnly">
+    /// True to mount read-only regardless of whether <paramref name="fs"/> also implements
+    /// <see cref="IAmigaFileSystemWriter"/> - needed for a gzip-decompressed ".hdz" source, since
+    /// <see cref="AdfImage.SaveTo"/> on that in-memory backing writes raw bytes and would corrupt the
+    /// original compressed file if a write were ever persisted.
+    /// </param>
+    public AdfFileSystem(
+        IAmigaFileSystem fs, AdfImage topLevelImage, string sourcePath, long volumeSizeBytes,
+        bool forceReadOnly = false)
     {
         _fs = fs;
-        _writer = fs as IAmigaFileSystemWriter;
+        _writer = forceReadOnly ? null : fs as IAmigaFileSystemWriter;
         _topLevelImage = topLevelImage;
         _sourcePath = sourcePath;
         _imageSizeBytes = volumeSizeBytes;

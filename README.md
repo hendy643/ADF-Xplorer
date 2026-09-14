@@ -35,7 +35,7 @@ like WinUAE/FS-UAE.
 
 There's no separate "app window" — everything happens from a tray icon. Right-click it (or find it
 under the hidden icons arrow) for: mounting an image, creating a new blank image, and
-validating/repairing a disk's checksums. Double-clicking a `.adf`/`.hdf` file in Explorer also mounts
+validating/repairing a disk's checksums. Double-clicking a `.adf`/`.hdf`/`.hdz` file in Explorer also mounts
 it directly — the installer registers that file association automatically, no setup step needed.
 Unmounting is tray-only: pick the volume from the tray menu's mounted-volumes list.
 
@@ -47,6 +47,7 @@ Unmounting is tray-only: pick the volume from the tray menu's mounted-volumes li
 | **OFS** (Original File System) | ✅ | ✅ |
 | **FFS** (Fast File System) | ✅ | ✅ |
 | **HDF** (hard disk image) with an **RDB** (Rigid Disk Block) partition table | ✅ | ✅ |
+| **HDZ** (gzip-compressed HDF) | ✅ (read-only) | ❌ |
 | Other RDB partition DOS types (e.g. SFS, PFS3) | Partition table itself is read/created; the partition's own filesystem isn't natively mounted unless it's OFS/FFS | Partitions can be created with any DOS type and an embedded third-party filesystem driver binary, for use in an emulator |
 
 When you mount an `.hdf` that contains an RDB partition table, AdfXplorer mounts **every

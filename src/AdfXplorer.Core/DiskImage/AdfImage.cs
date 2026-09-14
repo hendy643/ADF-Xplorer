@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.IO.Compression;
 
 namespace AdfXplorer.Core.DiskImage;
 
@@ -112,6 +113,23 @@ public sealed class AdfImage : IDisposable
 
         long sectorCount = fileInfo.Length / SectorSize;
         return new AdfImage(new FileBacking(path), startBlock: 0, sectorCount, ownsFileBacking: true);
+    }
+
+    /// <summary>
+    /// Loads an image from a gzip-compressed source (e.g. a ".hdz" file - an ordinary .hdf, gzipped).
+    /// Unlike <see cref="FromFile"/>, the whole image is decompressed into memory up front rather than
+    /// streamed block-by-block, because a <see cref="GZipStream"/> isn't seekable. The result uses the
+    /// same in-memory backing as <see cref="AdfImage(byte[])"/> - callers must treat it as read-only,
+    /// since <see cref="SaveTo"/> on that backing writes raw (non-gzipped) bytes and would silently
+    /// corrupt the original .hdz if ever invoked against its path.
+    /// </summary>
+    public static AdfImage FromGzipFile(string path)
+    {
+        using var fileStream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        using var gzip = new GZipStream(fileStream, CompressionMode.Decompress);
+        using var buffer = new MemoryStream();
+        gzip.CopyTo(buffer);
+        return new AdfImage(buffer.ToArray());
     }
 
     /// <summary>Number of blocks visible through this image or window - not necessarily the whole underlying file when this is a partition window (see <see cref="CreateWindow"/>).</summary>
