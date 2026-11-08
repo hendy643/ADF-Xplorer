@@ -106,17 +106,13 @@ public sealed class OfsFileSystem : AmigaHashDirectoryFileSystem
         }
 
         long newEnd = offset + length;
-        int totalBlocksNeeded = (int)((newEnd - 1) / DataBlockPayloadSize) + 1;
+        // Calculate number of blocks needed for the new size
+        // (newEnd - 1) / PayloadSize + 1 gives the number of blocks required.
+        long totalBlocksNeeded = (newEnd - 1) / DataBlockPayloadSize + 1;
 
-        int existingCount = 0;
-        int current = BlockReader.ReadInt32(Image.ReadBlock(headerBlock), OfsBlockOffsets.FileHeader_FirstData);
-        while (current != 0)
-        {
-            existingCount++;
-            current = BlockReader.ReadInt32(Image.ReadBlock(current), OfsBlockOffsets.Data_NextData);
-        }
+        int existingCount = GetCurrentDataBlockCount(headerBlock);
 
-        return Math.Max(0, totalBlocksNeeded - existingCount);
+        return (int)Math.Max(0, totalBlocksNeeded - existingCount);
     }
 
     protected override int WriteToDataBlock(int headerBlock, int logicalBlockIndex, int blockOffset, ReadOnlySpan<byte> data)

@@ -1,19 +1,21 @@
+using System.Collections.Concurrent;
 using System.Buffers.Binary;
 
 namespace AdfXplorer.Core.DiskImage;
+using AdfXplorer.Core.FileSystems.Ffs;
+using AdfXplorer.Core.FileSystems.Ofs;
 
 /// <summary>
 /// A raw Amiga Disk File (.adf/.hdf) image: a flat sequence of fixed-size 512-byte sectors ("blocks").
 /// This class acts as a neutral block storage container with linear sector access, independent
 /// of any specific Amiga filesystem format or capacity limits.
 /// Created images use an in-memory buffer; existing images are read one sector at a time from the source
-/// file, retaining only sectors modified through <see cref="GetBlockForWrite"/>.
-/// </summary>
+/// file, retaining only sectors modified through <see cref="GetBlockForWrite"/>.</summary>
 public sealed class AdfImage : IDisposable
 {
     private sealed class MemoryBacking
     {
-        public Dictionary<long, byte[]> Blocks { get; } = [];
+        public ConcurrentDictionary<long, byte[]> Blocks { get; } = new();
         public object SyncRoot { get; } = new();
     }
 
@@ -27,7 +29,7 @@ public sealed class AdfImage : IDisposable
 
         public string Path { get; }
         public FileStream Stream { get; }
-        public Dictionary<long, byte[]> ModifiedBlocks { get; } = [];
+        public ConcurrentDictionary<long, byte[]> ModifiedBlocks { get; } = new();
         public object SyncRoot { get; } = new();
 
         public void Dispose() => Stream.Dispose();
@@ -98,8 +100,7 @@ public sealed class AdfImage : IDisposable
 
     /// <summary>
     /// Opens an image for streamed sector access. Reads allocate only a single 512-byte result buffer;
-    /// writes are cached per changed sector and flushed by <see cref="SaveTo"/>.
-    /// </summary>
+    /// writes are cached per changed sector and flushed by <see cref="SaveTo"/>.</summary>
     public static AdfImage FromFile(string path)
     {
         var fileInfo = new FileInfo(path);
@@ -136,36 +137,47 @@ public sealed class AdfImage : IDisposable
 
         if (_fileBacking is not null)
         {
+            // Read lock ensures consistent state while accessing file and cache
             lock (_fileBacking.SyncRoot)
             {
+                // Check cache first (modified blocks)
                 if (_fileBacking.ModifiedBlocks.TryGetValue(absoluteBlock, out var modified))
                 {
                     return (byte[])modified.Clone();
                 }
 
+                // Cache miss: read from stream, add to cache
                 var block = new byte[SectorSize];
                 _fileBacking.Stream.Position = absoluteBlock * SectorSize;
                 _fileBacking.Stream.ReadExactly(block);
+                
+                // Store a copy in the modified blocks dictionary
+                _fileBacking.ModifiedBlocks.TryAdd(absoluteBlock, (byte[])block.Clone());
                 return block;
             }
         }
 
-        lock (_memoryBacking!.SyncRoot)
+        // Read from memory backing
+        if (_memoryBacking is not null)
         {
-            if (_memoryBacking.Blocks.TryGetValue(absoluteBlock, out var block))
+            lock (_memoryBacking.SyncRoot)
             {
-                return (byte[])block.Clone();
-            }
+                if (_memoryBacking.Blocks.TryGetValue(absoluteBlock, out var block))
+                {
+                    return (byte[])block.Clone();
+                }
 
-            return new byte[SectorSize];
+                return new byte[SectorSize];
+            }
         }
+        
+        throw new InvalidOperationException("AdfImage must be backed by either memory or a file.");
     }
 
     /// <summary>
     /// A read-only "window" over blocks [<paramref name="startBlock"/>, <paramref name="startBlock"/> +
     /// <paramref name="blockCount"/>) of this image, renumbered so the window's own block 0 maps to
-    /// this image's <paramref name="startBlock"/>.
-    /// </summary>
+    /// this image's <paramref name="startBlock"/>.</summary>
     public AdfImage CreateWindow(long startBlock, long blockCount)
     {
         if (startBlock < 0 || blockCount <= 0 || startBlock + blockCount > _sectorCount)
@@ -196,8 +208,11 @@ public sealed class AdfImage : IDisposable
     {
         ValidateBlockNumber(blockNumber);
         long absoluteBlock = _startBlock + blockNumber;
+
+        // If in transaction, journal the original block state before modification
         if (_journal is not null && !_journal.ContainsKey(absoluteBlock))
         {
+            // Read the block to journal its contents
             _journal[absoluteBlock] = ReadAbsoluteBlock(absoluteBlock);
         }
 
@@ -208,30 +223,39 @@ public sealed class AdfImage : IDisposable
 
         if (_fileBacking is not null)
         {
+            // Lock file backing for consistent read/write access to the block cache
             lock (_fileBacking.SyncRoot)
             {
                 if (!_fileBacking.ModifiedBlocks.TryGetValue(absoluteBlock, out var block))
                 {
+                    // Block not in cache: read from disk and add to modified cache
                     block = new byte[SectorSize];
                     _fileBacking.Stream.Position = absoluteBlock * SectorSize;
                     _fileBacking.Stream.ReadExactly(block);
-                    _fileBacking.ModifiedBlocks.Add(absoluteBlock, block);
+                    
+                    // Store a copy to allow modification without affecting the original disk content immediately
+                    _fileBacking.ModifiedBlocks.Add(absoluteBlock, (byte[])block.Clone());
                 }
 
                 return block;
             }
         }
 
-        lock (_memoryBacking!.SyncRoot)
+        // Memory backing path
+        if (_memoryBacking is not null)
         {
-            if (!_memoryBacking.Blocks.TryGetValue(absoluteBlock, out var block))
+            lock (_memoryBacking.SyncRoot)
             {
-                block = new byte[SectorSize];
-                _memoryBacking.Blocks.Add(absoluteBlock, block);
+                if (!_memoryBacking.Blocks.TryGetValue(absoluteBlock, out var block))
+                {
+                    block = new byte[SectorSize];
+                    _memoryBacking.Blocks.Add(absoluteBlock, block);
+                }
+                return block;
             }
-
-            return block;
         }
+
+        throw new InvalidOperationException("AdfImage must be backed by either memory or a file.");
     }
 
     /// <summary>
@@ -262,7 +286,7 @@ public sealed class AdfImage : IDisposable
         }
 
         var snapshot = _journal;
-        _journal = null; // stop recording before restoring, so the writes below aren't journaled themselves
+        _journal = null; // stop recording before restoring
         foreach (var (absoluteBlock, original) in snapshot)
         {
             original.CopyTo(GetBlockForWrite(absoluteBlock - _startBlock));
@@ -287,6 +311,7 @@ public sealed class AdfImage : IDisposable
 
             lock (_fileBacking.SyncRoot)
             {
+                // Apply all modifications in the cache to the stream
                 foreach (var (blockNumber, block) in _fileBacking.ModifiedBlocks)
                 {
                     _fileBacking.Stream.Position = blockNumber * SectorSize;
