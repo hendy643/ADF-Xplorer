@@ -49,6 +49,13 @@ Root: HKLM; Subkey: "SOFTWARE\Classes\AdfXplorer.HdfFile\DefaultIcon"; ValueType
 Root: HKLM; Subkey: "SOFTWARE\Classes\AdfXplorer.HdfFile\shell\open"; ValueType: string; ValueName: ""; ValueData: "Mount with AdfXplorer"; Flags: uninsdeletekey
 Root: HKLM; Subkey: "SOFTWARE\Classes\AdfXplorer.HdfFile\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\adfxplorer.exe"" mount ""%1"""; Flags: uninsdeletekey
 
+; File association for .hdz (gzip-compressed .hdf, mounted read-only)
+Root: HKLM; Subkey: "SOFTWARE\Classes\.hdz"; ValueType: string; ValueName: ""; ValueData: "AdfXplorer.HdzFile"; Flags: uninsdeletevalue
+Root: HKLM; Subkey: "SOFTWARE\Classes\AdfXplorer.HdzFile"; ValueType: string; ValueName: ""; ValueData: "Amiga Hard Disk Image (gzipped)"; Flags: uninsdeletekey
+Root: HKLM; Subkey: "SOFTWARE\Classes\AdfXplorer.HdzFile\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: """{app}\adfxplorer.exe"",0"; Flags: uninsdeletekey
+Root: HKLM; Subkey: "SOFTWARE\Classes\AdfXplorer.HdzFile\shell\open"; ValueType: string; ValueName: ""; ValueData: "Mount with AdfXplorer"; Flags: uninsdeletekey
+Root: HKLM; Subkey: "SOFTWARE\Classes\AdfXplorer.HdzFile\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\adfxplorer.exe"" mount ""%1"""; Flags: uninsdeletekey
+
 ; RegisteredApplications
 Root: HKLM; Subkey: "SOFTWARE\RegisteredApplications"; ValueType: string; ValueName: "AdfXplorer"; ValueData: "SOFTWARE\AdfXplorer\Capabilities"; Flags: uninsdeletevalue
 Root: HKLM; Subkey: "SOFTWARE\AdfXplorer\Capabilities"; ValueType: string; ValueName: "ApplicationName"; ValueData: "AdfXplorer"; Flags: uninsdeletekey
@@ -56,6 +63,7 @@ Root: HKLM; Subkey: "SOFTWARE\AdfXplorer\Capabilities"; ValueType: string; Value
 Root: HKLM; Subkey: "SOFTWARE\AdfXplorer\Capabilities"; ValueType: string; ValueName: "ApplicationIcon"; ValueData: """{app}\adfxplorer.exe"",0"; Flags: uninsdeletekey
 Root: HKLM; Subkey: "SOFTWARE\AdfXplorer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".adf"; ValueData: "AdfXplorer.AdfFile"; Flags: uninsdeletekey
 Root: HKLM; Subkey: "SOFTWARE\AdfXplorer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".hdf"; ValueData: "AdfXplorer.HdfFile"; Flags: uninsdeletekey
+Root: HKLM; Subkey: "SOFTWARE\AdfXplorer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".hdz"; ValueData: "AdfXplorer.HdzFile"; Flags: uninsdeletekey
 
 [Code]
 const

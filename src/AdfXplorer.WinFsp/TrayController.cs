@@ -128,7 +128,7 @@ internal sealed class TrayController : IDisposable
 
     private void MountViaPicker()
     {
-        string? path = PickOpenPath("Mount disk image");
+        string? path = PickOpenPath("Mount disk image", "ADF/HDF/HDZ disk image|*.adf;*.hdf;*.hdz");
         if (path is not null)
         {
             Mount(path);
@@ -148,13 +148,16 @@ internal sealed class TrayController : IDisposable
             return;
         }
 
-        var image = AdfImage.FromFile(sourcePath);
+        // ".hdz" is a gzip-compressed .hdf, decompressed to an in-memory image up front (see
+        // AdfImage.FromGzipFile) - it must never be written back, since there's no recompression path.
+        bool readOnly = Path.GetExtension(sourcePath).Equals(".hdz", StringComparison.OrdinalIgnoreCase);
+        var image = readOnly ? AdfImage.FromGzipFile(sourcePath) : AdfImage.FromFile(sourcePath);
         var (partitions, repaired) = RigidDiskBlock.TryReadPartitions(image, ChecksumConflictWindow.Show);
 
         bool anyRepaired = repaired;
         if (partitions is null)
         {
-            anyRepaired |= MountSingle(sourcePath, image);
+            anyRepaired |= MountSingle(sourcePath, image, readOnly);
         }
         else if (partitions.Count == 0)
         {
@@ -162,16 +165,19 @@ internal sealed class TrayController : IDisposable
         }
         else
         {
-            anyRepaired |= MountAllPartitions(sourcePath, image, partitions);
+            anyRepaired |= MountAllPartitions(sourcePath, image, partitions, readOnly);
         }
 
-        if (anyRepaired)
+        // A repair here only ever patches in-memory blocks; for a read-only (.hdz) source it must stay
+        // that way rather than being persisted, since SaveTo on that in-memory backing would write raw,
+        // non-gzipped bytes and corrupt the original file.
+        if (anyRepaired && !readOnly)
         {
             image.SaveTo(sourcePath);
         }
     }
 
-    private bool MountSingle(string sourcePath, AdfImage image)
+    private bool MountSingle(string sourcePath, AdfImage image, bool readOnly)
     {
         string? mountPoint = PickFreeDriveLetter([]);
         if (mountPoint is null)
@@ -184,13 +190,14 @@ internal sealed class TrayController : IDisposable
         var (fs, repaired) = MountFileSystemWithChecksums(image, label);
         if (fs is not null)
         {
-            MountOne(sourcePath, image, fs, image.SizeInBytes, mountPoint, label);
+            MountOne(sourcePath, image, fs, image.SizeInBytes, mountPoint, label, readOnly);
         }
 
         return repaired;
     }
 
-    private bool MountAllPartitions(string sourcePath, AdfImage image, IReadOnlyList<RdbPartition> partitions)
+    private bool MountAllPartitions(
+        string sourcePath, AdfImage image, IReadOnlyList<RdbPartition> partitions, bool readOnly)
     {
         var claimedLetters = new HashSet<char>();
         bool repaired = false;
@@ -217,7 +224,7 @@ internal sealed class TrayController : IDisposable
 
             claimedLetters.Add(driveLetter[0]);
 
-            if (MountOne(sourcePath, image, fs, window.SizeInBytes, driveLetter, label))
+            if (MountOne(sourcePath, image, fs, window.SizeInBytes, driveLetter, label, readOnly))
             {
                 mountedAny = true;
             }
@@ -273,9 +280,9 @@ internal sealed class TrayController : IDisposable
     /// </summary>
     private bool MountOne(
         string sourcePath, AdfImage topLevelImage, IAmigaFileSystem fs, long sizeBytes, string mountPoint,
-        string label)
+        string label, bool readOnly)
     {
-        var adfFs = new AdfFileSystem(fs, topLevelImage, sourcePath, sizeBytes);
+        var adfFs = new AdfFileSystem(fs, topLevelImage, sourcePath, sizeBytes, forceReadOnly: readOnly);
         var host = new FileSystemHost(adfFs);
         var status = host.Mount(mountPoint, true);
         if (status != NtStatus.Success)
@@ -424,12 +431,12 @@ internal sealed class TrayController : IDisposable
             return dialog.ShowDialog(UiThread.Owner) == DialogResult.OK ? dialog.FileName : null;
         });
 
-    private static string? PickOpenPath(string title) =>
+    private static string? PickOpenPath(string title, string filter) =>
         UiThread.Invoke(() =>
         {
             using var dialog = new OpenFileDialog();
             dialog.Title = title;
-            dialog.Filter = "ADF/HDF disk image|*.adf;*.hdf";
+            dialog.Filter = filter;
             dialog.CheckFileExists = true;
             return dialog.ShowDialog(UiThread.Owner) == DialogResult.OK ? dialog.FileName : null;
         });
@@ -438,7 +445,8 @@ internal sealed class TrayController : IDisposable
 
     private void ValidateViaPicker(bool interactive)
     {
-        string? path = PickOpenPath(interactive ? "Repair disk image" : "Validate disk image");
+        string? path = PickOpenPath(
+            interactive ? "Repair disk image" : "Validate disk image", "ADF/HDF disk image|*.adf;*.hdf");
         if (path is not null)
         {
             RunChecksumScan(path, interactive);
